@@ -104,7 +104,8 @@ RasterizeMeshesNaiveCpu(
     const torch::Tensor& face_verts,
     const torch::Tensor& mesh_to_face_first_idx,
     const torch::Tensor& num_faces_per_mesh,
-    int image_size,
+    int image_height,
+    int image_width,
     const float blur_radius,
     const int faces_per_pixel,
     const bool perspective_correct) {
@@ -118,8 +119,8 @@ RasterizeMeshesNaiveCpu(
   }
 
   const int32_t N = mesh_to_face_first_idx.size(0); // batch_size.
-  const int H = image_size;
-  const int W = image_size;
+  const int H = image_height;
+  const int W = image_width;
   const int K = faces_per_pixel;
 
   auto long_opts = face_verts.options().dtype(torch::kInt64);
@@ -154,7 +155,7 @@ RasterizeMeshesNaiveCpu(
     // Iterate through the horizontal lines of the image from top to bottom.
     for (int yi = 0; yi < H; ++yi) {
       // Reverse the order of yi so that +Y is pointing upwards in the image.
-      const int yidx = H - 1 - yi;
+      const int yidx = yi;
 
       // Y coordinate of the top of the pixel.
       const float yf = PixToNdc(yidx, H);
@@ -162,7 +163,7 @@ RasterizeMeshesNaiveCpu(
       for (int xi = 0; xi < W; ++xi) {
         // Reverse the order of xi so that +X is pointing to the left in the
         // image.
-        const int xidx = W - 1 - xi;
+        const int xidx = xi;
 
         // X coordinate of the left of the pixel.
         const float xf = PixToNdc(xidx, W);
@@ -276,7 +277,7 @@ torch::Tensor RasterizeMeshesBackwardCpu(
     // Iterate through the horizontal lines of the image from top to bottom.
     for (int y = 0; y < H; ++y) {
       // Reverse the order of yi so that +Y is pointing upwards in the image.
-      const int yidx = H - 1 - y;
+      const int yidx = y;
 
       // Y coordinate of the top of the pixel.
       const float yf = PixToNdc(yidx, H);
@@ -284,7 +285,7 @@ torch::Tensor RasterizeMeshesBackwardCpu(
       for (int x = 0; x < W; ++x) {
         // Reverse the order of xi so that +X is pointing to the left in the
         // image.
-        const int xidx = W - 1 - x;
+        const int xidx = x;
 
         // X coordinate of the left of the pixel.
         const float xf = PixToNdc(xidx, W);
@@ -385,103 +386,4 @@ torch::Tensor RasterizeMeshesBackwardCpu(
     }
   }
   return grad_face_verts;
-}
-
-torch::Tensor RasterizeMeshesCoarseCpu(
-    const torch::Tensor& face_verts,
-    const torch::Tensor& mesh_to_face_first_idx,
-    const torch::Tensor& num_faces_per_mesh,
-    const int image_size,
-    const float blur_radius,
-    const int bin_size,
-    const int max_faces_per_bin) {
-  if (face_verts.ndimension() != 3 || face_verts.size(1) != 3 ||
-      face_verts.size(2) != 3) {
-    AT_ERROR("face_verts must have dimensions (num_faces, 3, 3)");
-  }
-  if (num_faces_per_mesh.ndimension() != 1) {
-    AT_ERROR("num_faces_per_mesh can only have one dimension");
-  }
-
-  const int N = num_faces_per_mesh.size(0); // batch size.
-  const int M = max_faces_per_bin;
-
-  // Assume square images. TODO(T52813608) Support non square images.
-  const float height = image_size;
-  const float width = image_size;
-  const int BH = 1 + (height - 1) / bin_size; // Integer division round up.
-  const int BW = 1 + (width - 1) / bin_size; // Integer division round up.
-
-  auto opts = face_verts.options().dtype(torch::kInt32);
-  torch::Tensor faces_per_bin = torch::zeros({N, BH, BW}, opts);
-  torch::Tensor bin_faces = torch::full({N, BH, BW, M}, -1, opts);
-  auto faces_per_bin_a = faces_per_bin.accessor<int32_t, 3>();
-  auto bin_faces_a = bin_faces.accessor<int32_t, 4>();
-
-  // Precompute all face bounding boxes.
-  auto face_bboxes = ComputeFaceBoundingBoxes(face_verts);
-  auto face_bboxes_a = face_bboxes.accessor<float, 2>();
-
-  const float pixel_width = 2.0f / image_size;
-  const float bin_width = pixel_width * bin_size;
-
-  // Iterate through the meshes in the batch.
-  for (int n = 0; n < N; ++n) {
-    const int face_start_idx = mesh_to_face_first_idx[n].item().to<int32_t>();
-    const int face_stop_idx =
-        (face_start_idx + num_faces_per_mesh[n].item().to<int32_t>());
-
-    float bin_y_max = 1.0f;
-    float bin_y_min = bin_y_max - bin_width;
-
-    // Iterate through the horizontal bins from top to bottom.
-    for (int by = 0; by < BH; ++by) {
-      float bin_x_max = 1.0f;
-      float bin_x_min = bin_x_max - bin_width;
-
-      // Iterate through bins on this horizontal line, left to right.
-      for (int bx = 0; bx < BW; ++bx) {
-        int32_t faces_hit = 0;
-
-        for (int32_t f = face_start_idx; f < face_stop_idx; ++f) {
-          // Get bounding box and expand by blur radius.
-          float face_x_min = face_bboxes_a[f][0] - std::sqrt(blur_radius);
-          float face_y_min = face_bboxes_a[f][1] - std::sqrt(blur_radius);
-          float face_x_max = face_bboxes_a[f][2] + std::sqrt(blur_radius);
-          float face_y_max = face_bboxes_a[f][3] + std::sqrt(blur_radius);
-          float face_z_max = face_bboxes_a[f][5];
-
-          if (face_z_max < 0) {
-            continue; // Face is behind the camera.
-          }
-
-          // Use a half-open interval so that faces exactly on the
-          // boundary between bins will fall into exactly one bin.
-          bool x_overlap =
-              (face_x_min <= bin_x_max) && (bin_x_min < face_x_max);
-          bool y_overlap =
-              (face_y_min <= bin_y_max) && (bin_y_min < face_y_max);
-
-          if (x_overlap && y_overlap) {
-            // Got too many faces for this bin, so throw an error.
-            if (faces_hit >= max_faces_per_bin) {
-              AT_ERROR("Got too many faces per bin");
-            }
-            // The current point falls in the current bin, so
-            // record it.
-            bin_faces_a[n][by][bx][faces_hit] = f;
-            faces_hit++;
-          }
-        }
-
-        // Shift the bin to the left for the next loop iteration.
-        bin_x_max = bin_x_min;
-        bin_x_min = bin_x_min - bin_width;
-      }
-      // Shift the bin down for the next loop iteration.
-      bin_y_max = bin_y_min;
-      bin_y_min = bin_y_min - bin_width;
-    }
-  }
-  return bin_faces;
 }

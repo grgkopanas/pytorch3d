@@ -32,9 +32,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("accum_alphacomposite_backward", &alphaCompositeBackward);
 
   // These are only visible for testing; users should not call them directly
-  m.def("_rasterize_points_coarse", &RasterizePointsCoarse);
   m.def("_rasterize_points_naive", &RasterizePointsNaive);
   m.def("_rasterize_meshes_naive", &RasterizeMeshesNaive);
-  m.def("_rasterize_meshes_coarse", &RasterizeMeshesCoarse);
-  m.def("_rasterize_meshes_fine", &RasterizeMeshesFine);
 }

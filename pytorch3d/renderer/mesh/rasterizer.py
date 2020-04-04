@@ -19,7 +19,8 @@ class Fragments(NamedTuple):
 # Class to store the mesh rasterization params with defaults
 class RasterizationSettings:
     __slots__ = [
-        "image_size",
+        "image_height",
+        "image_width",
         "blur_radius",
         "faces_per_pixel",
         "bin_size",
@@ -29,14 +30,16 @@ class RasterizationSettings:
 
     def __init__(
         self,
-        image_size: int = 256,
+        image_height: int = 256,
+        image_width: int = 256,
         blur_radius: float = 0.0,
         faces_per_pixel: int = 1,
         bin_size: Optional[int] = None,
         max_faces_per_bin: Optional[int] = None,
         perspective_correct: bool = False,
     ):
-        self.image_size = image_size
+        self.image_height = image_height
+        self.image_width = image_width
         self.blur_radius = blur_radius
         self.faces_per_pixel = faces_per_pixel
         self.bin_size = bin_size
@@ -115,7 +118,8 @@ class MeshRasterizer(nn.Module):
         # based on the type of the camera?
         pix_to_face, zbuf, bary_coords, dists = rasterize_meshes(
             meshes_screen,
-            image_size=raster_settings.image_size,
+            image_height=raster_settings.image_height,
+            image_width=raster_settings.image_width,
             blur_radius=raster_settings.blur_radius,
             faces_per_pixel=raster_settings.faces_per_pixel,
             bin_size=raster_settings.bin_size,

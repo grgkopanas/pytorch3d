@@ -32,8 +32,8 @@ __global__ void alphaCompositeCudaForwardKernel(
   // Iterate over each feature in each pixel
   for (int pid = tid; pid < num_pixels; pid += num_threads) {
     int ch = pid / (W * H);
-    int j = (pid % (W * H)) / H;
-    int i = (pid % (W * H)) % H;
+    int j = (pid % (W * H)) / W;
+    int i = (pid % (W * H)) % W;
 
     // alphacomposite the different values
     float cum_alpha = 1.;
@@ -84,8 +84,8 @@ __global__ void alphaCompositeCudaBackwardKernel(
   // for each image in the batch of size batch_size
   for (int pid = tid; pid < num_pixels; pid += num_threads) {
     int ch = pid / (W * H);
-    int j = (pid % (W * H)) / H;
-    int i = (pid % (W * H)) % H;
+    int j = (pid % (W * H)) / W;
+    int i = (pid % (W * H)) % W;
 
     // alphacomposite the different values
     float cum_alpha = 1.;

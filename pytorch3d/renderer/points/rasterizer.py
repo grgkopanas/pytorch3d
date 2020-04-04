@@ -19,7 +19,8 @@ class PointFragments(NamedTuple):
 
 # Class to store the point rasterization params with defaults
 class PointsRasterizationSettings(NamedTuple):
-    image_size: int = 256
+    image_height: int = 256
+    image_width: int =256
     radius: float = 0.01
     points_per_pixel: int = 8
     bin_size: Optional[int] = None
@@ -94,7 +95,8 @@ class PointsRasterizer(nn.Module):
         raster_settings = kwargs.get("raster_settings", self.raster_settings)
         idx, zbuf, dists2 = rasterize_points(
             points_screen,
-            image_size=raster_settings.image_size,
+            image_height=raster_settings.image_height,
+            image_width=raster_settings.image_width,
             radius=raster_settings.radius,
             points_per_pixel=raster_settings.points_per_pixel,
             bin_size=raster_settings.bin_size,

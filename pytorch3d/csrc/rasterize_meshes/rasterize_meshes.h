@@ -14,7 +14,8 @@ RasterizeMeshesNaiveCpu(
     const torch::Tensor& face_verts,
     const torch::Tensor& mesh_to_face_first_idx,
     const torch::Tensor& num_faces_per_mesh,
-    const int image_size,
+    const int image_height,
+    const int image_width,
     const float blur_radius,
     const int faces_per_pixel,
     const bool perspective_correct);
@@ -25,7 +26,8 @@ RasterizeMeshesNaiveCuda(
     const at::Tensor& face_verts,
     const at::Tensor& mesh_to_face_first_idx,
     const at::Tensor& num_faces_per_mesh,
-    const int image_size,
+    const int image_height,
+    const int image_width,
     const float blur_radius,
     const int num_closest,
     const bool perspective_correct);
@@ -77,7 +79,8 @@ RasterizeMeshesNaive(
     const torch::Tensor& face_verts,
     const torch::Tensor& mesh_to_face_first_idx,
     const torch::Tensor& num_faces_per_mesh,
-    const int image_size,
+    const int image_height,
+    const int image_width,
     const float blur_radius,
     const int faces_per_pixel,
     const bool perspective_correct) {
@@ -88,7 +91,8 @@ RasterizeMeshesNaive(
         face_verts,
         mesh_to_face_first_idx,
         num_faces_per_mesh,
-        image_size,
+        image_height,
+        image_width,
         blur_radius,
         faces_per_pixel,
         perspective_correct);
@@ -100,7 +104,8 @@ RasterizeMeshesNaive(
         face_verts,
         mesh_to_face_first_idx,
         num_faces_per_mesh,
-        image_size,
+        image_height,
+        image_width,
         blur_radius,
         faces_per_pixel,
         perspective_correct);
@@ -184,163 +189,6 @@ torch::Tensor RasterizeMeshesBackward(
 }
 
 // ****************************************************************************
-// *                          COARSE RASTERIZATION                            *
-// ****************************************************************************
-
-torch::Tensor RasterizeMeshesCoarseCpu(
-    const torch::Tensor& face_verts,
-    const at::Tensor& mesh_to_face_first_idx,
-    const at::Tensor& num_faces_per_mesh,
-    const int image_size,
-    const float blur_radius,
-    const int bin_size,
-    const int max_faces_per_bin);
-
-#ifdef WITH_CUDA
-torch::Tensor RasterizeMeshesCoarseCuda(
-    const torch::Tensor& face_verts,
-    const torch::Tensor& mesh_to_face_first_idx,
-    const torch::Tensor& num_faces_per_mesh,
-    const int image_size,
-    const float blur_radius,
-    const int bin_size,
-    const int max_faces_per_bin);
-#endif
-// Args:
-//    face_verts: Tensor of shape (F, 3, 3) giving (packed) vertex positions for
-//                faces in all the meshes in the batch. Concretely,
-//                face_verts[f, i] = [x, y, z] gives the coordinates for the
-//                ith vertex of the fth face. These vertices are expected to be
-//                in NDC coordinates in the range [-1, 1].
-//    mesh_to_face_first_idx: LongTensor of shape (N) giving the index in
-//                            faces_verts of the first face in each mesh in
-//                            the batch where N is the batch size.
-//    num_faces_per_mesh: LongTensor of shape (N) giving the number of faces
-//                        for each mesh in the batch.
-//    image_size: Size in pixels of the output image to be rasterized.
-//    blur_radius: float distance in NDC coordinates uses to expand the face
-//                 bounding boxes for the rasterization. Set to 0.0 if no blur
-//                 is required.
-//    bin_size: Size of each bin within the image (in pixels)
-//    max_faces_per_bin: Maximum number of faces to count in each bin.
-//
-// Returns:
-//   bin_face_idxs: Tensor of shape (N, num_bins, num_bins, K) giving the
-//                  indices of faces that fall into each bin.
-
-torch::Tensor RasterizeMeshesCoarse(
-    const torch::Tensor& face_verts,
-    const torch::Tensor& mesh_to_face_first_idx,
-    const torch::Tensor& num_faces_per_mesh,
-    const int image_size,
-    const float blur_radius,
-    const int bin_size,
-    const int max_faces_per_bin) {
-  if (face_verts.type().is_cuda()) {
-#ifdef WITH_CUDA
-    return RasterizeMeshesCoarseCuda(
-        face_verts,
-        mesh_to_face_first_idx,
-        num_faces_per_mesh,
-        image_size,
-        blur_radius,
-        bin_size,
-        max_faces_per_bin);
-#else
-    AT_ERROR("Not compiled with GPU support");
-#endif
-  } else {
-    return RasterizeMeshesCoarseCpu(
-        face_verts,
-        mesh_to_face_first_idx,
-        num_faces_per_mesh,
-        image_size,
-        blur_radius,
-        bin_size,
-        max_faces_per_bin);
-  }
-}
-
-// ****************************************************************************
-// *                            FINE RASTERIZATION                            *
-// ****************************************************************************
-
-#ifdef WITH_CUDA
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-RasterizeMeshesFineCuda(
-    const torch::Tensor& face_verts,
-    const torch::Tensor& bin_faces,
-    const int image_size,
-    const float blur_radius,
-    const int bin_size,
-    const int faces_per_pixel,
-    const bool perspective_correct);
-#endif
-// Args:
-//    face_verts: Tensor of shape (F, 3, 3) giving (packed) vertex positions for
-//                faces in all the meshes in the batch. Concretely,
-//                face_verts[f, i] = [x, y, z] gives the coordinates for the
-//                ith vertex of the fth face. These vertices are expected to be
-//                in NDC coordinates in the range [-1, 1].
-//    bin_faces: int32 Tensor of shape (N, B, B, M) giving the indices of faces
-//               that fall into each bin (output from coarse rasterization).
-//    image_size: Size in pixels of the output image to be rasterized.
-//    blur_radius: float distance in NDC coordinates uses to expand the face
-//                 bounding boxes for the rasterization. Set to 0.0 if no blur
-//                 is required.
-//    bin_size: Size of each bin within the image (in pixels)
-//    faces_per_pixel: the number of closeset faces to rasterize per pixel.
-//    perspective_correct: Whether to apply perspective correction when
-//                         computing barycentric coordinates. If this is True,
-//                         then this function returns world-space barycentric
-//                         coordinates for each pixel; if this is False then
-//                         this function instead returns screen-space
-//                         barycentric coordinates for each pixel.
-//
-// Returns (same as rasterize_meshes):
-//    A 4 element tuple of:
-//    pix_to_face: int64 tensor of shape (N, H, W, K) giving the face index of
-//                 each of the closest faces to the pixel in the rasterized
-//                 image, or -1 for pixels that are not covered by any face.
-//    zbuf: float32 Tensor of shape (N, H, W, K) giving the depth of each of
-//          the closest faces for each pixel.
-//    barycentric_coords: float tensor of shape (N, H, W, K, 3) giving
-//                        barycentric coordinates of the pixel with respect to
-//                        each of the closest faces along the z axis, padded
-//                        with -1 for pixels hit by fewer than
-//                        faces_per_pixel faces.
-//    dists: float tensor of shape (N, H, W, K) giving the euclidean distance
-//           in the (NDC) x/y plane between each pixel and its K closest
-//           faces along the z axis padded  with -1 for pixels hit by fewer than
-//           faces_per_pixel faces.
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-RasterizeMeshesFine(
-    const torch::Tensor& face_verts,
-    const torch::Tensor& bin_faces,
-    const int image_size,
-    const float blur_radius,
-    const int bin_size,
-    const int faces_per_pixel,
-    const bool perspective_correct) {
-  if (face_verts.type().is_cuda()) {
-#ifdef WITH_CUDA
-    return RasterizeMeshesFineCuda(
-        face_verts,
-        bin_faces,
-        image_size,
-        blur_radius,
-        bin_size,
-        faces_per_pixel,
-        perspective_correct);
-#else
-    AT_ERROR("Not compiled with GPU support");
-#endif
-  } else {
-    AT_ERROR("NOT IMPLEMENTED");
-  }
-}
-
-// ****************************************************************************
 // *                         MAIN ENTRY POINT                                 *
 // ****************************************************************************
 
@@ -395,39 +243,22 @@ RasterizeMeshes(
     const torch::Tensor& face_verts,
     const torch::Tensor& mesh_to_face_first_idx,
     const torch::Tensor& num_faces_per_mesh,
-    const int image_size,
+    const int image_height,
+    const int image_width,
     const float blur_radius,
     const int faces_per_pixel,
     const int bin_size,
     const int max_faces_per_bin,
     const bool perspective_correct) {
-  if (bin_size > 0 && max_faces_per_bin > 0) {
-    // Use coarse-to-fine rasterization
-    auto bin_faces = RasterizeMeshesCoarse(
-        face_verts,
-        mesh_to_face_first_idx,
-        num_faces_per_mesh,
-        image_size,
-        blur_radius,
-        bin_size,
-        max_faces_per_bin);
-    return RasterizeMeshesFine(
-        face_verts,
-        bin_faces,
-        image_size,
-        blur_radius,
-        bin_size,
-        faces_per_pixel,
-        perspective_correct);
-  } else {
+
     // Use the naive per-pixel implementation
     return RasterizeMeshesNaive(
         face_verts,
         mesh_to_face_first_idx,
         num_faces_per_mesh,
-        image_size,
+        image_height,
+        image_width,
         blur_radius,
         faces_per_pixel,
         perspective_correct);
-  }
 }

@@ -10,7 +10,8 @@ from pytorch3d.renderer.mesh.rasterize_meshes import pix_to_ndc
 # TODO(jcjohns): Support non-square images
 def rasterize_points(
     pointclouds,
-    image_size: int = 256,
+    image_height: int = 256,
+    image_width: int = 256,
     radius: float = 0.01,
     points_per_pixel: int = 8,
     bin_size: Optional[int] = None,
@@ -73,13 +74,13 @@ def rasterize_points(
             bin_size = 0
         else:
             # TODO: These heuristics are not well-thought out!
-            if image_size <= 64:
+            if image_height <= 64:
                 bin_size = 8
-            elif image_size <= 256:
+            elif image_height <= 256:
                 bin_size = 16
-            elif image_size <= 512:
+            elif image_height <= 512:
                 bin_size = 32
-            elif image_size <= 1024:
+            elif image_height <= 1024:
                 bin_size = 64
 
     if max_points_per_bin is None:
@@ -91,7 +92,8 @@ def rasterize_points(
         points_packed,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
-        image_size,
+        image_height,
+        image_width,
         radius,
         points_per_pixel,
         bin_size,
@@ -106,7 +108,8 @@ class _RasterizePoints(torch.autograd.Function):
         points,  # (P, 3)
         cloud_to_packed_first_idx,
         num_points_per_cloud,
-        image_size: int = 256,
+        image_height: int = 256,
+        image_width: int = 256,
         radius: float = 0.01,
         points_per_pixel: int = 8,
         bin_size: int = 0,
@@ -118,7 +121,8 @@ class _RasterizePoints(torch.autograd.Function):
             points,
             cloud_to_packed_first_idx,
             num_points_per_cloud,
-            image_size,
+            image_height,
+            image_width,
             radius,
             points_per_pixel,
             bin_size,
@@ -133,7 +137,8 @@ class _RasterizePoints(torch.autograd.Function):
         grad_points = None
         grad_cloud_to_packed_first_idx = None
         grad_num_points_per_cloud = None
-        grad_image_size = None
+        grad_image_height = None
+        grad_image_width = None
         grad_radius = None
         grad_points_per_pixel = None
         grad_bin_size = None
@@ -145,7 +150,8 @@ class _RasterizePoints(torch.autograd.Function):
             grad_points,
             grad_cloud_to_packed_first_idx,
             grad_num_points_per_cloud,
-            grad_image_size,
+            grad_image_height,
+            grad_image_width,
             grad_radius,
             grad_points_per_pixel,
             grad_bin_size,
@@ -160,11 +166,6 @@ def rasterize_points_python(
     radius: float = 0.01,
     points_per_pixel: int = 8,
 ):
-    """
-    Naive pure PyTorch implementation of pointcloud rasterization.
-
-    Inputs / Outputs: Same as above
-    """
     N = len(pointclouds)
     S, K = image_size, points_per_pixel
     device = pointclouds.device
@@ -225,3 +226,4 @@ def rasterize_points_python(
                     point_idxs[n, yi, xi, k] = p
                     pix_dists[n, yi, xi, k] = dist2
     return point_idxs, zbuf, pix_dists
+

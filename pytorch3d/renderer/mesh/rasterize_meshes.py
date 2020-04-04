@@ -13,7 +13,8 @@ kEpsilon = 1e-30
 
 def rasterize_meshes(
     meshes,
-    image_size: int = 256,
+    image_height: int = 256,
+    image_width: int = 256,
     blur_radius: float = 0.0,
     faces_per_pixel: int = 8,
     bin_size: Optional[int] = None,
@@ -88,30 +89,15 @@ def rasterize_meshes(
     mesh_to_face_first_idx = meshes.mesh_to_faces_packed_first_idx()
     num_faces_per_mesh = meshes.num_faces_per_mesh()
 
-    # TODO: Choose naive vs coarse-to-fine based on mesh size and image size.
-    if bin_size is None:
-        if not verts_packed.is_cuda:
-            # Binned CPU rasterization is not supported.
-            bin_size = 0
-        else:
-            # TODO better heuristics for bin size.
-            if image_size <= 64:
-                bin_size = 8
-            elif image_size <= 256:
-                bin_size = 16
-            elif image_size <= 512:
-                bin_size = 32
-            elif image_size <= 1024:
-                bin_size = 64
-
-    if max_faces_per_bin is None:
-        max_faces_per_bin = int(max(10000, verts_packed.shape[0] / 5))
+    bin_size = 0
+    max_faces_per_bin = 0
 
     return _RasterizeFaceVerts.apply(
         face_verts,
         mesh_to_face_first_idx,
         num_faces_per_mesh,
-        image_size,
+        image_height,
+        image_width,
         blur_radius,
         faces_per_pixel,
         bin_size,
@@ -149,7 +135,8 @@ class _RasterizeFaceVerts(torch.autograd.Function):
         face_verts,
         mesh_to_face_first_idx,
         num_faces_per_mesh,
-        image_size: int = 256,
+        image_height: int = 256,
+        image_width: int = 256,
         blur_radius: float = 0.01,
         faces_per_pixel: int = 0,
         bin_size: int = 0,
@@ -160,7 +147,8 @@ class _RasterizeFaceVerts(torch.autograd.Function):
             face_verts,
             mesh_to_face_first_idx,
             num_faces_per_mesh,
-            image_size,
+            image_height,
+            image_width,
             blur_radius,
             faces_per_pixel,
             bin_size,
