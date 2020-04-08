@@ -25,6 +25,7 @@ class PointsRasterizationSettings(NamedTuple):
     points_per_pixel: int = 8
     bin_size: Optional[int] = None
     max_points_per_bin: Optional[int] = None
+    zfar: float = None
 
 
 class PointsRasterizer(nn.Module):
@@ -101,5 +102,6 @@ class PointsRasterizer(nn.Module):
             points_per_pixel=raster_settings.points_per_pixel,
             bin_size=raster_settings.bin_size,
             max_points_per_bin=raster_settings.max_points_per_bin,
+            zfar=raster_settings.zfar
         )
         return PointFragments(idx=idx, zbuf=zbuf, dists=dists2)

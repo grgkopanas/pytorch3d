@@ -16,7 +16,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaiveCpu(
     const int image_height,
     const int image_width,
     const float radius,
-    const int points_per_pixel);
+    const int points_per_pixel,
+    const float zfar);
 
 #ifdef WITH_CUDA
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
@@ -27,7 +28,8 @@ RasterizePointsNaiveCuda(
     const int image_height,
     const int image_width,
     const float radius,
-    const int points_per_pixel);
+    const int points_per_pixel,
+    const float zfar);
 #endif
 // Naive (forward) pointcloud rasterization: For each pixel, for each point,
 // check whether that point hits the pixel.
@@ -65,7 +67,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
     const int image_height,
     const int image_width,
     const float radius,
-    const int points_per_pixel) {
+    const int points_per_pixel,
+    const float zfar) {
   if (points.type().is_cuda() && cloud_to_packed_first_idx.type().is_cuda() &&
       num_points_per_cloud.type().is_cuda()) {
 #ifdef WITH_CUDA
@@ -76,7 +79,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
         image_height,
         image_width,
         radius,
-        points_per_pixel);
+        points_per_pixel,
+        zfar);
 #else
     AT_ERROR("Not compiled with GPU support");
 #endif
@@ -88,7 +92,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
         image_height,
         image_width,
         radius,
-        points_per_pixel);
+        points_per_pixel,
+        zfar);
   }
 }
 
@@ -185,7 +190,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
     const float radius,
     const int points_per_pixel,
     const int bin_size,
-    const int max_points_per_bin) {
+    const int max_points_per_bin,
+    const float zfar) {
   if (bin_size == 0) {
     // Use the naive per-pixel implementation
     return RasterizePointsNaive(
@@ -195,6 +201,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
         image_height,
         image_width,
         radius,
-        points_per_pixel);
+        points_per_pixel,
+        zfar);
   }
 }

@@ -19,7 +19,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaiveCpu(
     const int image_height,
     const int image_width,
     const float radius,
-    const int points_per_pixel) {
+    const int points_per_pixel,
+    const float zfar) {
   const int32_t N = cloud_to_packed_first_idx.size(0); // batch_size.
 
   const int H = image_height;
@@ -30,7 +31,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaiveCpu(
   auto int_opts = points.options().dtype(torch::kInt32);
   auto float_opts = points.options().dtype(torch::kFloat32);
   torch::Tensor point_idxs = torch::full({N, H, W, K}, -1, int_opts);
-  torch::Tensor zbuf = torch::full({N, H, W, K}, -1, float_opts);
+  torch::Tensor zbuf = torch::full({N, H, W, K}, 2.0*zfar, float_opts);
   torch::Tensor pix_dists = torch::full({N, H, W, K}, -1, float_opts);
 
   auto points_a = points.accessor<float, 2>();

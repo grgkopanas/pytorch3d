@@ -16,6 +16,7 @@ def rasterize_points(
     points_per_pixel: int = 8,
     bin_size: Optional[int] = None,
     max_points_per_bin: Optional[int] = None,
+    zfar: float = -0.5
 ):
     """
     Pointcloud rasterization
@@ -98,6 +99,7 @@ def rasterize_points(
         points_per_pixel,
         bin_size,
         max_points_per_bin,
+        zfar
     )
 
 
@@ -114,6 +116,7 @@ class _RasterizePoints(torch.autograd.Function):
         points_per_pixel: int = 8,
         bin_size: int = 0,
         max_points_per_bin: int = 0,
+        zfar: float = -0.5
     ):
         # TODO: Add better error handling for when there are more than
         # max_points_per_bin in any bin.
@@ -127,6 +130,7 @@ class _RasterizePoints(torch.autograd.Function):
             points_per_pixel,
             bin_size,
             max_points_per_bin,
+            zfar
         )
         idx, zbuf, dists = _C.rasterize_points(*args)
         ctx.save_for_backward(points, idx)
@@ -143,6 +147,7 @@ class _RasterizePoints(torch.autograd.Function):
         grad_points_per_pixel = None
         grad_bin_size = None
         grad_max_points_per_bin = None
+        grad_zfar = None
         points, idx = ctx.saved_tensors
         args = (points, idx, grad_zbuf, grad_dists)
         grad_points = _C.rasterize_points_backward(*args)
@@ -156,6 +161,7 @@ class _RasterizePoints(torch.autograd.Function):
             grad_points_per_pixel,
             grad_bin_size,
             grad_max_points_per_bin,
+            grad_zfar
         )
         return grads
 

@@ -146,7 +146,8 @@ RasterizePointsNaiveCuda(
     const int image_height,
     const int image_width,
     const float radius,
-    const int points_per_pixel) {
+    const int points_per_pixel,
+    const float zfar) {
   if (points.ndimension() != 2 || points.size(1) != 3) {
     AT_ERROR("points must have dimensions (num_points, 3)");
   }
@@ -169,7 +170,7 @@ RasterizePointsNaiveCuda(
   auto int_opts = points.options().dtype(torch::kInt32);
   auto float_opts = points.options().dtype(torch::kFloat32);
   torch::Tensor point_idxs = torch::full({N, H, W, K}, -1, int_opts);
-  torch::Tensor zbuf = torch::full({N, H, W, K}, -1, float_opts);
+  torch::Tensor zbuf = torch::full({N, H, W, K}, 2.0*zfar, float_opts);
   torch::Tensor pix_dists = torch::full({N, H, W, K}, -1, float_opts);
 
   const size_t blocks = 1024;
