@@ -4,7 +4,9 @@
 #include <torch/extension.h>
 #include <cstdio>
 #include <sstream>
+#include <iostream>
 #include <tuple>
+#include <stdio.h>
 #include "rasterize_points/bitmask.cuh"
 #include "rasterize_points/rasterization_utils.cuh"
 
@@ -97,8 +99,8 @@ __global__ void RasterizePointsNaiveCudaKernel(
     const int pix_idx = i % (H * W);
 
     // Reverse ordering of X and Y axes.
-    const int yi = pix_idx / W;
-    const int xi = pix_idx % W;
+    const int yi = H -1 - pix_idx / W;
+    const int xi = W -1 - pix_idx % W;
 
     const float xf = PixToNdc(xi, W);
     const float yf = PixToNdc(yi, H);
@@ -191,6 +193,319 @@ RasterizePointsNaiveCuda(
 }
 
 // ****************************************************************************
+// *                          COARSE RASTERIZATION                            *
+// ****************************************************************************
+
+__global__ void RasterizePointsCoarseCudaKernel(
+    const float* points, // (P, 3)
+    const int64_t* cloud_to_packed_first_idx, // (N)
+    const int64_t* num_points_per_cloud, // (N)
+    const float radius,
+    const int N,
+    const int P,
+    const int image_height,
+    const int image_width,
+    const int bin_size,
+    const int chunk_size,
+    const int max_points_per_bin,
+    int* points_per_bin,
+    int* bin_points) {
+  extern __shared__ char sbuf[];
+  const int M = max_points_per_bin;
+  const int H = image_height;
+  const int W = image_width;
+  const int num_bins_h = 1 + (H - 1) / bin_size; // Integer divide round up
+  const int num_bins_w = 1 + (W - 1) / bin_size;
+
+  const float half_pix_y = 1.0f / H; // Size of half a pixel in NDC units
+  const float half_pix_x = 1.0f / W; // Size of half a pixel in NDC units
+
+  // This is a boolean array of shape (num_bins, num_bins, chunk_size)
+  // stored in shared memory that will track whether each point in the chunk
+  // falls into each bin of the image.
+  BitMask binmask((unsigned int*)sbuf, num_bins_h, num_bins_w, chunk_size);
+
+  // Have each block handle a chunk of points and build a 3D bitmask in
+  // shared memory to mark which points hit which bins.  In this first phase,
+  // each thread processes one point at a time. After processing the chunk,
+  // one thread is assigned per bin, and the thread counts and writes the
+  // points for the bin out to global memory.
+  const int chunks_per_batch = 1 + (P - 1) / chunk_size;
+  const int num_chunks = N * chunks_per_batch;
+  for (int chunk = blockIdx.x; chunk < num_chunks; chunk += gridDim.x) {
+    const int batch_idx = chunk / chunks_per_batch;
+    const int chunk_idx = chunk % chunks_per_batch;
+    const int point_start_idx = chunk_idx * chunk_size;
+
+    binmask.block_clear();
+
+    // Using the batch index of the thread get the start and stop
+    // indices for the points.
+    const int64_t cloud_point_start_idx = cloud_to_packed_first_idx[batch_idx];
+    const int64_t cloud_point_stop_idx =
+        cloud_point_start_idx + num_points_per_cloud[batch_idx];
+
+    // Have each thread handle a different point within the chunk
+    for (int p = threadIdx.x; p < chunk_size; p += blockDim.x) {
+      const int p_idx = point_start_idx + p;
+
+      // Check if point index corresponds to the cloud in the batch given by
+      // batch_idx.
+      if (p_idx >= cloud_point_stop_idx || p_idx < cloud_point_start_idx) {
+        continue;
+      }
+
+      const float px = points[p_idx * 3 + 0];
+      const float py = points[p_idx * 3 + 1];
+      const float pz = points[p_idx * 3 + 2];
+      if (pz < 0)
+        continue; // Don't render points behind the camera.
+      const float px0 = px - radius;
+      const float px1 = px + radius;
+      const float py0 = py - radius;
+      const float py1 = py + radius;
+
+      // Brute-force search over all bins; TODO something smarter?
+      // For example we could compute the exact bin where the point falls,
+      // then check neighboring bins. This way we wouldn't have to check
+      // all bins (however then we might have more warp divergence?)
+      for (int by = 0; by < num_bins_h; ++by) {
+        // Get y extent for the bin. PixToNdc gives us the location of
+        // the center of each pixel, so we need to add/subtract a half
+        // pixel to get the true extent of the bin.
+        // Reverse ordering of Y axis so that +Y is upwards in the image.
+        const int yidx = num_bins_h - by;
+        const float bin_y_max = PixToNdc(yidx * bin_size - 1, H) + half_pix_y;
+        const float bin_y_min = PixToNdc((yidx - 1) * bin_size, H) - half_pix_y;
+        //printf("H: %d half_pix_y %f by: %i yidx: %i insidePixToNDC_max %i insidePixToNDC_min %i bin_y_max %f bin_y_min %f\n", H, half_pix_y, by, yidx, yidx * bin_size - 1, (yidx - 1) * bin_size, bin_y_max, bin_y_min);
+        const bool y_overlap = (py0 <= bin_y_max) && (bin_y_min <= py1);
+        if (!y_overlap) {
+          continue;
+        }
+        for (int bx = 0; bx < num_bins_w; ++bx) {
+          // Get x extent for the bin; again we need to adjust the
+          // output of PixToNdc by half a pixel.
+          // Reverse ordering of x axis so that +X is left.
+          const int xidx = num_bins_w - bx;
+          const float bin_x_max = PixToNdc(xidx * bin_size - 1, W) + half_pix_x;
+          const float bin_x_min = PixToNdc((xidx - 1) * bin_size, W) - half_pix_x;
+          const bool x_overlap = (px0 <= bin_x_max) && (bin_x_min <= px1);
+          if (x_overlap) {
+            binmask.set(by, bx, p);
+          }
+        }
+      }
+    }
+    __syncthreads();
+    // Now we have processed every point in the current chunk. We need to
+    // count the number of points in each bin so we can write the indices
+    // out to global memory. We have each thread handle a different bin.
+    for (int byx = threadIdx.x; byx < num_bins_h * num_bins_w; byx += blockDim.x) {
+      const int by = byx / num_bins_w;
+      const int bx = byx % num_bins_w;
+      const int count = binmask.count(by, bx);
+      const int points_per_bin_idx =
+          batch_idx * num_bins_h * num_bins_w + by * num_bins_w + bx;
+
+      // This atomically increments the (global) number of points found
+      // in the current bin, and gets the previous value of the counter;
+      // this effectively allocates space in the bin_points array for the
+      // points in the current chunk that fall into this bin.
+      const int start = atomicAdd(points_per_bin + points_per_bin_idx, count);
+
+      // Now loop over the binmask and write the active bits for this bin
+      // out to bin_points.
+      int next_idx = batch_idx * num_bins_h * num_bins_w * M + by * num_bins_w * M +
+          bx * M + start;
+      for (int p = 0; p < chunk_size; ++p) {
+        if (binmask.get(by, bx, p)) {
+          // TODO: Throw an error if next_idx >= M -- this means that
+          // we got more than max_points_per_bin in this bin
+          // TODO: check if atomicAdd is needed in line 265.
+          bin_points[next_idx] = point_start_idx + p;
+          next_idx++;
+        }
+      }
+    }
+    __syncthreads();
+  }
+}
+
+torch::Tensor RasterizePointsCoarseCuda(
+    const torch::Tensor& points, // (P, 3)
+    const torch::Tensor& cloud_to_packed_first_idx, // (N)
+    const torch::Tensor& num_points_per_cloud, // (N)
+    const int image_height,
+    const int image_width,
+    const float radius,
+    const int bin_size,
+    const int max_points_per_bin) {
+  const int P = points.size(0);
+  const int N = num_points_per_cloud.size(0);
+  const int num_bins_h = 1 + (image_height - 1) / bin_size; // divide round up
+  const int num_bins_w = 1 + (image_width - 1) / bin_size;
+  const int M = max_points_per_bin;
+  if (points.ndimension() != 2 || points.size(1) != 3) {
+    AT_ERROR("points must have dimensions (num_points, 3)");
+  }
+  std::cout << "Got " << num_bins_h << "*" << num_bins_w << " . Bin size " << bin_size << " H " << image_height << " W " << image_width << std::endl;
+  if (num_bins_h*num_bins_w >= 22*22) {
+    // Make sure we do not use too much shared memory.
+    std::stringstream ss;
+    ss << "Got " << num_bins_h << "*" << num_bins_w << "; that's too many!";
+    AT_ERROR(ss.str());
+  }
+  auto opts = points.options().dtype(torch::kInt32);
+  torch::Tensor points_per_bin = torch::zeros({N, num_bins_h, num_bins_w}, opts);
+  torch::Tensor bin_points = torch::full({N, num_bins_h, num_bins_w, M}, -1, opts);
+  const int chunk_size = 512;
+  const size_t shared_size = num_bins_h * num_bins_w * chunk_size / 8;
+  const size_t blocks = 64;
+  const size_t threads = 512;
+  RasterizePointsCoarseCudaKernel<<<blocks, threads, shared_size>>>(
+      points.contiguous().data_ptr<float>(),
+      cloud_to_packed_first_idx.contiguous().data_ptr<int64_t>(),
+      num_points_per_cloud.contiguous().data_ptr<int64_t>(),
+      radius,
+      N,
+      P,
+      image_height,
+      image_width,
+      bin_size,
+      chunk_size,
+      M,
+      points_per_bin.contiguous().data_ptr<int32_t>(),
+      bin_points.contiguous().data_ptr<int32_t>());
+  return bin_points;
+}
+
+// ****************************************************************************
+// *                            FINE RASTERIZATION                            *
+// ****************************************************************************
+
+__global__ void RasterizePointsFineCudaKernel(
+    const float* points, // (P, 3)
+    const int32_t* bin_points, // (N, B, B, T)
+    const float radius,
+    const int bin_size,
+    const int N,
+    const int B_h,
+    const int B_w,
+    const int M,
+    const int H,
+    const int W,
+    const int K,
+    int32_t* point_idxs, // (N, S, S, K)
+    float* zbuf, // (N, S, S, K)
+    float* pix_dists) { // (N, S, S, K)
+  // This can be more than S^2 if S is not dividable by bin_size.
+  const int num_pixels = N * B_h * B_w * bin_size * bin_size;
+  const int num_threads = gridDim.x * blockDim.x;
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const float radius2 = radius * radius;
+
+  for (int pid = tid; pid < num_pixels; pid += num_threads) {
+    // Convert linear index into bin and pixel indices. We make the within
+    // block pixel ids move the fastest, so that adjacent threads will fall
+    // into the same bin; this should give them coalesced memory reads when
+    // they read from points and bin_points.
+    int i = pid;
+    const int n = i / (B_h * B_w * bin_size * bin_size);
+    i %= B_h * B_w * bin_size * bin_size;
+    const int by = i / (B_w * bin_size * bin_size);
+    i %= B_w * bin_size * bin_size;
+    const int bx = i / (bin_size * bin_size);
+    i %= bin_size * bin_size;
+    const int yi = i / bin_size + by * bin_size;
+    const int xi = i % bin_size + bx * bin_size;
+
+    if (yi >= H || xi >= W)
+      continue;
+
+    // Reverse ordering of the X and Y axis so that
+    // in the image +Y is pointing up and +X is pointing left.
+    const int yidx = H - 1 - yi;
+    const int xidx = W - 1 - xi;
+
+    const float xf = PixToNdc(xidx, W);
+    const float yf = PixToNdc(yidx, H);
+
+    // This part looks like the naive rasterization kernel, except we use
+    // bin_points to only look at a subset of points already known to fall
+    // in this bin. TODO abstract out this logic into some data structure
+    // that is shared by both kernels?
+    Pix q[kMaxPointsPerPixel];
+    int q_size = 0;
+    float q_max_z = -1000;
+    int q_max_idx = -1;
+    for (int m = 0; m < M; ++m) {
+      const int p = bin_points[n * B_h * B_w * M + by * B_w * M + bx * M + m];
+      if (p < 0) {
+        // bin_points uses -1 as a sentinal value
+        continue;
+      }
+      CheckPixelInsidePoint(
+          points, p, q_size, q_max_z, q_max_idx, q, radius2, xf, yf, K);
+    }
+    // Now we've looked at all the points for this bin, so we can write
+    // output for the current pixel.
+    BubbleSort(q, q_size);
+    const int pix_idx = n * H * W * K + yi * W * K + xi * K;
+    for (int k = 0; k < q_size; ++k) {
+      point_idxs[pix_idx + k] = q[k].idx;
+      zbuf[pix_idx + k] = q[k].z;
+      pix_dists[pix_idx + k] = q[k].dist2;
+    }
+  }
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsFineCuda(
+    const torch::Tensor& points, // (P, 3)
+    const torch::Tensor& bin_points,
+    const int image_height,
+    const int image_width,
+    const float radius,
+    const int bin_size,
+    const int points_per_pixel,
+    float zfar) {
+  const int N = bin_points.size(0);
+  const int B_h = bin_points.size(1);
+  const int B_w = bin_points.size(2);
+  const int M = bin_points.size(3);
+  const int H = image_height;
+  const int W = image_width;
+  const int K = points_per_pixel;
+  if (K > kMaxPointsPerPixel) {
+    AT_ERROR("Must have num_closest <= 8");
+  }
+  auto int_opts = points.options().dtype(torch::kInt32);
+  auto float_opts = points.options().dtype(torch::kFloat32);
+  torch::Tensor point_idxs = torch::full({N, H, W, K}, -1, int_opts);
+  torch::Tensor zbuf = torch::full({N, H, W, K}, 2*zfar, float_opts);
+  torch::Tensor pix_dists = torch::full({N, H, W, K}, -1, float_opts);
+
+  const size_t blocks = 1024;
+  const size_t threads = 64;
+  RasterizePointsFineCudaKernel<<<blocks, threads>>>(
+      points.contiguous().data_ptr<float>(),
+      bin_points.contiguous().data_ptr<int32_t>(),
+      radius,
+      bin_size,
+      N,
+      B_h,
+      B_w,
+      M,
+      H,
+      W,
+      K,
+      point_idxs.contiguous().data_ptr<int32_t>(),
+      zbuf.contiguous().data_ptr<float>(),
+      pix_dists.contiguous().data_ptr<float>());
+
+  return std::make_tuple(point_idxs, zbuf, pix_dists);
+}
+
+// ****************************************************************************
 // *                            BACKWARD PASS                                 *
 // ****************************************************************************
 // TODO(T55115174) Add more documentation for backward kernel.
@@ -217,8 +532,8 @@ __global__ void RasterizePointsBackwardCudaKernel(
     const int xi = xk / K;
     // k = xk % K (We don't actually need k, but this would be it.)
     // Reverse ordering of X and Y axes.
-    const int yidx = yi;
-    const int xidx = xi;
+    const int yidx = H - 1 - yi;
+    const int xidx = W - 1 - xi;
 
     const float xf = PixToNdc(xidx, W);
     const float yf = PixToNdc(yidx, H);

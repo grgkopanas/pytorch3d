@@ -75,13 +75,13 @@ def rasterize_points(
             bin_size = 0
         else:
             # TODO: These heuristics are not well-thought out!
-            if image_height <= 64:
+            if max(image_height, image_width) <= 64:
                 bin_size = 8
-            elif image_height <= 256:
+            elif max(image_height, image_width) <= 256:
                 bin_size = 16
-            elif image_height <= 512:
+            elif max(image_height, image_width) <= 512:
                 bin_size = 32
-            elif image_height <= 1024:
+            elif max(image_height, image_width) <= 1024:
                 bin_size = 64
 
     if max_points_per_bin is None:
