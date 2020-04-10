@@ -99,8 +99,8 @@ __global__ void RasterizePointsNaiveCudaKernel(
     const int pix_idx = i % (H * W);
 
     // Reverse ordering of X and Y axes.
-    const int yi = H -1 - pix_idx / W;
-    const int xi = W -1 - pix_idx % W;
+    const int yi = pix_idx / W;
+    const int xi = pix_idx % W;
 
     const float xf = PixToNdc(xi, W);
     const float yf = PixToNdc(yi, H);
@@ -274,7 +274,7 @@ __global__ void RasterizePointsCoarseCudaKernel(
         // the center of each pixel, so we need to add/subtract a half
         // pixel to get the true extent of the bin.
         // Reverse ordering of Y axis so that +Y is upwards in the image.
-        const int yidx = num_bins_h - by;
+        const int yidx = by + 1;
         const float bin_y_max = PixToNdc(yidx * bin_size - 1, H) + half_pix_y;
         const float bin_y_min = PixToNdc((yidx - 1) * bin_size, H) - half_pix_y;
         //printf("H: %d half_pix_y %f by: %i yidx: %i insidePixToNDC_max %i insidePixToNDC_min %i bin_y_max %f bin_y_min %f\n", H, half_pix_y, by, yidx, yidx * bin_size - 1, (yidx - 1) * bin_size, bin_y_max, bin_y_min);
@@ -286,7 +286,7 @@ __global__ void RasterizePointsCoarseCudaKernel(
           // Get x extent for the bin; again we need to adjust the
           // output of PixToNdc by half a pixel.
           // Reverse ordering of x axis so that +X is left.
-          const int xidx = num_bins_w - bx;
+          const int xidx = bx + 1;
           const float bin_x_max = PixToNdc(xidx * bin_size - 1, W) + half_pix_x;
           const float bin_x_min = PixToNdc((xidx - 1) * bin_size, W) - half_pix_x;
           const bool x_overlap = (px0 <= bin_x_max) && (bin_x_min <= px1);
@@ -348,7 +348,6 @@ torch::Tensor RasterizePointsCoarseCuda(
   if (points.ndimension() != 2 || points.size(1) != 3) {
     AT_ERROR("points must have dimensions (num_points, 3)");
   }
-  std::cout << "Got " << num_bins_h << "*" << num_bins_w << " . Bin size " << bin_size << " H " << image_height << " W " << image_width << std::endl;
   if (num_bins_h*num_bins_w >= 22*22) {
     // Make sure we do not use too much shared memory.
     std::stringstream ss;
@@ -424,8 +423,8 @@ __global__ void RasterizePointsFineCudaKernel(
 
     // Reverse ordering of the X and Y axis so that
     // in the image +Y is pointing up and +X is pointing left.
-    const int yidx = H - 1 - yi;
-    const int xidx = W - 1 - xi;
+    const int yidx = yi;
+    const int xidx = xi;
 
     const float xf = PixToNdc(xidx, W);
     const float yf = PixToNdc(yidx, H);
@@ -532,8 +531,8 @@ __global__ void RasterizePointsBackwardCudaKernel(
     const int xi = xk / K;
     // k = xk % K (We don't actually need k, but this would be it.)
     // Reverse ordering of X and Y axes.
-    const int yidx = H - 1 - yi;
-    const int xidx = W - 1 - xi;
+    const int yidx = yi;
+    const int xidx = xi;
 
     const float xf = PixToNdc(xidx, W);
     const float yf = PixToNdc(yidx, H);
