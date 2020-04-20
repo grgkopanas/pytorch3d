@@ -10,6 +10,7 @@ from pytorch3d.renderer.mesh.rasterize_meshes import pix_to_ndc
 # TODO(jcjohns): Support non-square images
 def rasterize_points(
     pointclouds,
+    points,
     image_height: int = 256,
     image_width: int = 256,
     radius: float = 0.01,
@@ -65,7 +66,10 @@ def rasterize_points(
           and the point `(points[n, p, 0], points[n, p, 1])`. Pixels hit with fewer
           than points_per_pixel are padded with -1.
     """
-    points_packed = pointclouds.points_packed()
+    if points is not None:
+        points_packed = points[:, :, :3].squeeze(dim=0)
+    else:
+        points_packed = pointclouds.points_packed()
     cloud_to_packed_first_idx = pointclouds.cloud_to_packed_first_idx()
     num_points_per_cloud = pointclouds.num_points_per_cloud()
 

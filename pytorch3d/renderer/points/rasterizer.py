@@ -5,6 +5,8 @@
 from typing import NamedTuple, Optional
 import torch
 import torch.nn as nn
+import time
+from line_profiler import LineProfiler
 
 from ..cameras import get_world_to_view_transform
 from .rasterize_points import rasterize_points
@@ -33,7 +35,7 @@ class PointsRasterizer(nn.Module):
     This class implements methods for rasterizing a batch of pointclouds.
     """
 
-    def __init__(self, cameras, raster_settings=None):
+    def __init__(self, cameras, camera_gk, raster_settings=None):
         """
         cameras: A cameras object which has a  `transform_points` method
                 which returns the transformed points after applying the
@@ -50,9 +52,10 @@ class PointsRasterizer(nn.Module):
             raster_settings = PointsRasterizationSettings()
 
         self.cameras = cameras
+        self.camera_gk = camera_gk
         self.raster_settings = raster_settings
 
-    def transform(self, point_clouds, **kwargs) -> torch.Tensor:
+    def transform(self, point_clouds, hom_cloud=None, profile=False, **kwargs) -> torch.Tensor:
         """
         Args:
             point_clouds: a set of point clouds
@@ -64,8 +67,20 @@ class PointsRasterizer(nn.Module):
         NOTE: keeping this as a separate function for readability but it could
         be moved into forward.
         """
-        cameras = kwargs.get("cameras", self.cameras)
+        if hom_cloud is not None:
+            full_proj_transform = self.camera_gk.full_proj_transform.get_matrix()
+            pts_projected = hom_cloud.bmm(full_proj_transform)
+            pts_projected_normalised = pts_projected/pts_projected[..., 3:]
 
+            view_transform = self.camera_gk.world_view_transform.get_matrix()
+            points_viewspace = hom_cloud.bmm(view_transform)
+            points_viewspace = points_viewspace/points_viewspace[..., 3:]
+
+            pts_projected_normalised[..., 2] = points_viewspace[..., 2]
+            return pts_projected_normalised
+
+
+        cameras = kwargs.get("cameras", self.cameras)
         pts_world = point_clouds.points_padded()
         pts_world_packed = point_clouds.points_packed()
         pts_screen = cameras.transform_points(pts_world, **kwargs)
@@ -76,25 +91,36 @@ class PointsRasterizer(nn.Module):
         # to a different range.
         view_transform = get_world_to_view_transform(R=cameras.R, T=cameras.T)
         verts_view = view_transform.transform_points(pts_world)
+
         pts_screen[..., 2] = verts_view[..., 2]
 
         # Offset points of input pointcloud to reuse cached padded/packed calculations.
+
         pad_to_packed_idx = point_clouds.padded_to_packed_idx()
         pts_screen_packed = pts_screen.view(-1, 3)[pad_to_packed_idx, :]
         pts_packed_offset = pts_screen_packed - pts_world_packed
         point_clouds = point_clouds.offset(pts_packed_offset)
         return point_clouds
 
-    def forward(self, point_clouds, **kwargs) -> PointFragments:
+    def forward(self, point_clouds, hom_point_cloud=None, profile=False, **kwargs) -> PointFragments:
         """
         Args:
             point_clouds: a set of point clouds with coordinates in world space.
         Returns:
             PointFragments: Rasterization outputs as a named tuple.
         """
-        points_screen = self.transform(point_clouds, **kwargs)
+        torch.cuda.synchronize()
+        time0 = time.time()
+        points_screen = self.transform(point_clouds, hom_point_cloud, **kwargs)
+        torch.cuda.synchronize()
+        time1 = time.time()
+        print("Project points {}".format(time1-time0))
+
         raster_settings = kwargs.get("raster_settings", self.raster_settings)
+        torch.cuda.synchronize()
+        time0 = time.time()
         idx, zbuf, dists2 = rasterize_points(
+            point_clouds,
             points_screen,
             image_height=raster_settings.image_height,
             image_width=raster_settings.image_width,
@@ -104,4 +130,7 @@ class PointsRasterizer(nn.Module):
             max_points_per_bin=raster_settings.max_points_per_bin,
             zfar=raster_settings.zfar
         )
+        torch.cuda.synchronize()
+        time1 = time.time()
+        print("Rasterize {}".format(time1-time0))
         return PointFragments(idx=idx, zbuf=zbuf, dists=dists2)

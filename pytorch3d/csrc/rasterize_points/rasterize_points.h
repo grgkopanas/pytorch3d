@@ -30,6 +30,17 @@ RasterizePointsNaiveCuda(
     const float radius,
     const int points_per_pixel,
     const float zfar);
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+RasterizePointsGKCuda(
+    const torch::Tensor& points,
+    const torch::Tensor& cloud_to_packed_first_idx,
+    const torch::Tensor& num_points_per_cloud,
+    const int image_height,
+    const int image_width,
+    const float radius,
+    const int points_per_pixel,
+    const float zfar);
 #endif
 // Naive (forward) pointcloud rasterization: For each pixel, for each point,
 // check whether that point hits the pixel.
@@ -72,7 +83,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
   if (points.type().is_cuda() && cloud_to_packed_first_idx.type().is_cuda() &&
       num_points_per_cloud.type().is_cuda()) {
 #ifdef WITH_CUDA
-    return RasterizePointsNaiveCuda(
+    return RasterizePointsGKCuda(
         points,
         cloud_to_packed_first_idx,
         num_points_per_cloud,

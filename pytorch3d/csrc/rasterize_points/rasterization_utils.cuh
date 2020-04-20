@@ -10,6 +10,10 @@ __device__ inline float PixToNdc(int i, int S) {
   return -1 + (2 * i + 1.0f) / S;
 }
 
+__device__ inline float NdcToPix(float i, int S) {
+  return ((i + 1.0)*S - 1.0)/2.0;
+}
+
 // The maximum number of points per pixel that we can return. Since we use
 // thread-local arrays to hold and sort points, the maximum size of the array
 // needs to be known at compile time. There might be some fancy template magic
@@ -19,15 +23,20 @@ const int32_t kMaxPointsPerPixel = 150;
 
 template <typename T>
 __device__ inline void BubbleSort(T* arr, int n) {
+  bool already_sorted;
   // Bubble sort. We only use it for tiny thread-local arrays (n < 8); in this
   // regime we care more about warp divergence than computational complexity.
   for (int i = 0; i < n - 1; ++i) {
+    already_sorted=true;
     for (int j = 0; j < n - i - 1; ++j) {
       if (arr[j + 1] < arr[j]) {
+        already_sorted = false;
         T temp = arr[j];
         arr[j] = arr[j + 1];
         arr[j + 1] = temp;
       }
     }
+    if (already_sorted)
+        break;
   }
 }

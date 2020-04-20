@@ -4,6 +4,7 @@ import math
 import warnings
 from typing import Optional
 import torch
+import time
 
 from .rotation_conversions import _axis_angle_rotation
 
@@ -281,7 +282,9 @@ class Transform3d:
         points_batch = torch.cat([points_batch, ones], dim=2)
 
         composed_matrix = self.get_matrix()
+
         points_out = _broadcast_bmm(points_batch, composed_matrix)
+
         denom = points_out[..., 3:]  # denominator
         if eps is not None:
             denom_sign = denom.sign() + (denom == 0.0).type_as(denom)
@@ -292,7 +295,6 @@ class Transform3d:
         # points_out of shape (P, 3)
         if points_out.shape[0] == 1 and points.dim() == 2:
             points_out = points_out.reshape(points.shape)
-
         return points_out
 
     def transform_normals(self, normals):
