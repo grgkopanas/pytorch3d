@@ -6,7 +6,6 @@ from typing import NamedTuple, Optional
 import torch
 import torch.nn as nn
 import time
-from line_profiler import LineProfiler
 
 from ..cameras import get_world_to_view_transform
 from .rasterize_points import rasterize_points
