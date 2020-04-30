@@ -108,12 +108,13 @@ class PointsRasterizer(nn.Module):
         Returns:
             PointFragments: Rasterization outputs as a named tuple.
         """
-
-        points_screen = self.transform(point_clouds, hom_point_cloud, **kwargs)
+        if hom_point_cloud is not None:
+            points_screen = self.transform(point_clouds, hom_point_cloud, **kwargs)
+        if hom_point_cloud is None:
+            point_clouds = self.transform(point_clouds, hom_point_cloud, **kwargs)
+            points_screen = None
 
         raster_settings = kwargs.get("raster_settings", self.raster_settings)
-        torch.cuda.synchronize()
-        time0 = time.time()
         idx, zbuf, dists2 = rasterize_points(
             point_clouds,
             points_screen,
@@ -125,5 +126,4 @@ class PointsRasterizer(nn.Module):
             max_points_per_bin=raster_settings.max_points_per_bin,
             zfar=raster_settings.zfar
         )
-
         return PointFragments(idx=idx, zbuf=zbuf, dists=dists2)
