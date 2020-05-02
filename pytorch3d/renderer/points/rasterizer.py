@@ -26,7 +26,10 @@ class PointsRasterizationSettings(NamedTuple):
     points_per_pixel: int = 8
     bin_size: Optional[int] = None
     max_points_per_bin: Optional[int] = None
+    znear: float = None
     zfar: float = None
+    gamma: float = None
+    sigma: float = None
 
 
 class PointsRasterizer(nn.Module):
@@ -34,7 +37,7 @@ class PointsRasterizer(nn.Module):
     This class implements methods for rasterizing a batch of pointclouds.
     """
 
-    def __init__(self, cameras, camera_gk, raster_settings=None):
+    def __init__(self, cameras, camera_gk=None, raster_settings=None):
         """
         cameras: A cameras object which has a  `transform_points` method
                 which returns the transformed points after applying the
@@ -115,7 +118,7 @@ class PointsRasterizer(nn.Module):
             points_screen = None
 
         raster_settings = kwargs.get("raster_settings", self.raster_settings)
-        idx, zbuf, dists2 = rasterize_points(
+        color = rasterize_points(
             point_clouds,
             points_screen,
             image_height=raster_settings.image_height,
@@ -124,6 +127,9 @@ class PointsRasterizer(nn.Module):
             points_per_pixel=raster_settings.points_per_pixel,
             bin_size=raster_settings.bin_size,
             max_points_per_bin=raster_settings.max_points_per_bin,
-            zfar=raster_settings.zfar
+            znear=raster_settings.znear,
+            zfar=raster_settings.zfar,
+            gamma=raster_settings.gamma,
+            sigma=raster_settings.sigma
         )
-        return PointFragments(idx=idx, zbuf=zbuf, dists=dists2)
+        return color

@@ -235,18 +235,21 @@ __global__ void OrderPointsGKCudaKernel(
 
 __global__ void RasterizePointsGKCudaKernel(
     const float* points, // (P, 3)
+    const float* colors,
     const int P,
-    uint32_t* k_idxs, // (N, H, W)
     const int64_t* cloud_to_packed_first_idx, // (N)
     const int64_t* num_points_per_cloud, // (N)
     const float radius,
     const int N,
+    const int C,
     const int H,
     const int W,
-    const int K,
-    int32_t* point_idxs, // (N, H, W, K)
-    float* zbuf, // (N, H, W, K)
-    float* pix_dists)  // (N, H, W, K)
+    float* accum_product,
+    float* accum_weights,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma)
 {
     // Simple version: One thread per output pixel
     const int num_threads = gridDim.x * blockDim.x;
@@ -257,6 +260,10 @@ __global__ void RasterizePointsGKCudaKernel(
         const float px_ndc = points[i * 3 + 0];
         const float py_ndc = points[i * 3 + 1];
         const float pz = points[i * 3 + 2];
+
+        const float color_r = colors[i*3 + 0];
+        const float color_g = colors[i*3 + 1];
+        const float color_b = colors[i*3 + 2];
 
         const float px = NdcToPix(px_ndc, W);
         const float py = NdcToPix(py_ndc, H);
@@ -277,21 +284,25 @@ __global__ void RasterizePointsGKCudaKernel(
                     continue;
                 float dx = PixToNdc(x_idx, W) - px_ndc;
                 float dy = PixToNdc(y_idx, H) - py_ndc;
-                float dists2 = dx*dx + dy*dy;
-                if (dists2 > radius2)
+                float dist2 = dx*dx + dy*dy;
+                if (dist2 > radius2)
                     // This doesn't create divergence since all threads will skip in sync.
                     continue;
+                float dist = sqrtf(dist2);
+                float z_exponent = ((zfar - pz)/(zfar - znear))/gamma;
+                float gauss_exponent = -dist/(2*sigma*sigma);
+                float w = expf(gauss_exponent + z_exponent);
 
-                int k_idx = atomicInc(&(k_idxs[0*H*W + y_idx*W + x_idx]), K + 1);
-                if (k_idx == K) {
-                    printf("Pixel y:%d x:%d exceeded point projection limit\n", y_idx, x_idx);
-                    assert(0);
-                }
+                int idx_accum_weights = 0*H*W + y_idx*W + x_idx;
+                atomicAdd(&(accum_weights[idx_accum_weights]), w);
 
-                int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + k_idx;
-                point_idxs[idx] = i;
-                zbuf[idx] = pz;
-                pix_dists[idx] = dx*dx + dy*dy;
+                int idx_product = 0*C*H*W + 0*H*W + y_idx*W + x_idx;
+                atomicAdd(&(accum_product[idx_product]), w*color_r);
+                idx_product += H*W;
+                atomicAdd(&(accum_product[idx_product]), w*color_g);
+                idx_product += H*W;
+                atomicAdd(&(accum_product[idx_product]), w*color_b);
+                //printf("i %d y_idx %d x_idx %d w %f dist %f sigma %f z %f\n", i, y_idx, x_idx, w, dist, sigma, z_exponent);
             }
         }
     }
@@ -300,16 +311,23 @@ __global__ void RasterizePointsGKCudaKernel(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points, // (P, 3)
+    const torch::Tensor& colors,
     const torch::Tensor& cloud_to_packed_first_idx, // (N)
     const torch::Tensor& num_points_per_cloud, // (N)
     const int image_height,
     const int image_width,
     const float radius,
     const int points_per_pixel,
-    const float zfar) {
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma) {
 
   if (points.ndimension() != 2 || points.size(1) != 3) {
     AT_ERROR("points must have dimensions (num_points, 3)");
+  }
+  if (points.size(0) != colors.size(0)) {
+    AT_ERROR("points and features must have the same dimensions");
   }
   if (num_points_per_cloud.size(0) != cloud_to_packed_first_idx.size(0)) {
     AT_ERROR(
@@ -317,58 +335,40 @@ RasterizePointsGKCuda(
   }
 
   const int P = points.size(0);
+  const int C = colors.size(1);
   const int N = num_points_per_cloud.size(0); // batch size.
   const int H = image_height;
   const int W = image_width;
-  const int K = points_per_pixel;
 
-  if (K > kMaxPointsPerPixel) {
-    std::stringstream ss;
-    ss << "Must have points_per_pixel <= " << kMaxPointsPerPixel;
-    AT_ERROR(ss.str());
-  }
 
   auto int_opts = points.options().dtype(torch::kInt32);
   auto float_opts = points.options().dtype(torch::kFloat32);
-  torch::Tensor point_idxs = torch::full({N, H, W, kMaxPointsPerPixel}, -1, int_opts);
-  torch::Tensor zbuf = torch::full({N, H, W, kMaxPointsPerPixel}, 2.0*zfar, float_opts);
-  torch::Tensor pix_dists = torch::full({N, H, W, kMaxPointsPerPixel}, -1, float_opts);
-  torch::Tensor k_idxs = torch::full({N, H, W}, 0, int_opts);
+  torch::Tensor accum_product = torch::full({N, C, H, W}, 0.0, float_opts);
+  torch::Tensor accum_weights = torch::full({N, 1, H, W}, 0.0, float_opts);
+
 
   const size_t blocks = 1024;
-  const size_t threads = 64;
+  const size_t threads = 64 ;
   //printf("This is the new rast\n");
   RasterizePointsGKCudaKernel<<<blocks, threads>>>(
       points.contiguous().data<float>(),
+      colors.contiguous().data<float>(),
       P,
-      (unsigned int *)k_idxs.data<int32_t>(),
       cloud_to_packed_first_idx.contiguous().data<int64_t>(),
       num_points_per_cloud.contiguous().data<int64_t>(),
       radius,
       N,
+      C,
       H,
       W,
-      kMaxPointsPerPixel,
-      point_idxs.contiguous().data<int32_t>(),
-      zbuf.contiguous().data<float>(),
-      pix_dists.contiguous().data<float>());
+      accum_product.contiguous().data<float>(),
+      accum_weights.contiguous().data<float>(),
+      znear,
+      zfar,
+      sigma,
+      gamma);
 
-  cudaDeviceSynchronize();
-
-  OrderPointsGKCudaKernel<<<blocks, threads>>>(
-      point_idxs.contiguous().data<int32_t>(),
-      zbuf.contiguous().data<float>(),
-      pix_dists.contiguous().data<float>(),
-      (unsigned int *)k_idxs.data<int32_t>(),
-      H,
-      W,
-      kMaxPointsPerPixel);
-
-  point_idxs = point_idxs.narrow(-1, 0, K);
-  zbuf = zbuf.narrow(-1, 0, K);
-  pix_dists = pix_dists.narrow(-1, 0, K);
-
-  return std::make_tuple(point_idxs, zbuf, pix_dists);
+   return std::make_tuple(accum_product, accum_weights, accum_weights);
 }
 
 

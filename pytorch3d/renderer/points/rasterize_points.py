@@ -17,7 +17,10 @@ def rasterize_points(
     points_per_pixel: int = 8,
     bin_size: Optional[int] = None,
     max_points_per_bin: Optional[int] = None,
-    zfar: float = -0.5
+    znear: float = 0.0,
+    zfar: float = -0.5,
+    gamma: float = 0.04,
+    sigma: float = 0.008
 ):
     """
     Pointcloud rasterization
@@ -72,6 +75,7 @@ def rasterize_points(
         points_packed = pointclouds.points_packed()
     cloud_to_packed_first_idx = pointclouds.cloud_to_packed_first_idx()
     num_points_per_cloud = pointclouds.num_points_per_cloud()
+    colors = pointclouds.features_packed()
 
     if bin_size is None:
         if not points_packed.is_cuda:
@@ -95,6 +99,7 @@ def rasterize_points(
     # wrapper and call apply with positional args only
     return _RasterizePoints.apply(
         points_packed,
+        colors,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height,
@@ -103,7 +108,10 @@ def rasterize_points(
         points_per_pixel,
         bin_size,
         max_points_per_bin,
-        zfar
+        znear,
+        zfar,
+        gamma,
+        sigma,
     )
 
 
@@ -112,6 +120,7 @@ class _RasterizePoints(torch.autograd.Function):
     def forward(
         ctx,
         points,  # (P, 3)
+        colors,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height: int = 256,
@@ -120,12 +129,16 @@ class _RasterizePoints(torch.autograd.Function):
         points_per_pixel: int = 8,
         bin_size: int = 0,
         max_points_per_bin: int = 0,
-        zfar: float = -0.5
+        znear: float = 0.0,
+        zfar: float = -0.5,
+        gamma: float = 0.4,
+        sigma: float = 0.008
     ):
         # TODO: Add better error handling for when there are more than
         # max_points_per_bin in any bin.
         args = (
             points,
+            colors,
             cloud_to_packed_first_idx,
             num_points_per_cloud,
             image_height,
@@ -134,11 +147,14 @@ class _RasterizePoints(torch.autograd.Function):
             points_per_pixel,
             bin_size,
             max_points_per_bin,
-            zfar
+            znear,
+            zfar,
+            sigma,
+            gamma,
         )
-        idx, zbuf, dists = _C.rasterize_points(*args)
-        ctx.save_for_backward(points, idx)
-        return idx, zbuf, dists
+        accum_product, accum_weights, _ = _C.rasterize_points(*args)
+        #ctx.save_for_backward(points, idx)
+        return accum_product/(accum_weights + 0.0000001)
 
     @staticmethod
     def backward(ctx, grad_idx, grad_zbuf, grad_dists):

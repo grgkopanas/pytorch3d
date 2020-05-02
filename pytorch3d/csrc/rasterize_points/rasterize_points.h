@@ -34,13 +34,17 @@ RasterizePointsNaiveCuda(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points,
+    const torch::Tensor& colors,
     const torch::Tensor& cloud_to_packed_first_idx,
     const torch::Tensor& num_points_per_cloud,
     const int image_height,
     const int image_width,
     const float radius,
     const int points_per_pixel,
-    const float zfar);
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma);
 #endif
 // Naive (forward) pointcloud rasterization: For each pixel, for each point,
 // check whether that point hits the pixel.
@@ -73,25 +77,33 @@ RasterizePointsGKCuda(
 //          points along the z axis.
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
     const torch::Tensor& points,
+    const torch::Tensor& colors,
     const torch::Tensor& cloud_to_packed_first_idx,
     const torch::Tensor& num_points_per_cloud,
     const int image_height,
     const int image_width,
     const float radius,
     const int points_per_pixel,
-    const float zfar) {
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma) {
   if (points.type().is_cuda() && cloud_to_packed_first_idx.type().is_cuda() &&
       num_points_per_cloud.type().is_cuda()) {
 #ifdef WITH_CUDA
     return RasterizePointsGKCuda(
         points,
+        colors,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height,
         image_width,
         radius,
         points_per_pixel,
-        zfar);
+        znear,
+        zfar,
+        sigma,
+        gamma);
 #else
     AT_ERROR("Not compiled with GPU support");
 #endif
@@ -316,6 +328,7 @@ torch::Tensor RasterizePointsBackward(
 //         points along the z axis.
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
     const torch::Tensor& points,
+    const torch::Tensor& colors,
     const torch::Tensor& cloud_to_packed_first_idx,
     const torch::Tensor& num_points_per_cloud,
     const int image_height,
@@ -324,18 +337,25 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
     const int points_per_pixel,
     const int bin_size,
     const int max_points_per_bin,
-    const float zfar) {
+    const float znear,
+    const float zfar,
+    const float gamma,
+    const float sigma) {
   if (bin_size == 0) {
     // Use the naive per-pixel implementation
     return RasterizePointsNaive(
         points,
+        colors,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height,
         image_width,
         radius,
         points_per_pixel,
-        zfar);
+        znear,
+        zfar,
+        gamma,
+        sigma);
   }
    else {
     // Use coarse-to-fine rasterization
