@@ -152,13 +152,22 @@ class _RasterizePoints(torch.autograd.Function):
             sigma,
             gamma,
         )
-        accum_product, accum_weights, _ = _C.rasterize_points(*args)
-        #ctx.save_for_backward(points, idx)
-        return accum_product/(accum_weights + 0.0000001)
+        print("WTF?")
+        out_color, accum_product, accum_weights = _C.rasterize_points(*args)
+        ctx.radius = radius
+        ctx.znear = znear
+        ctx.zfar = zfar
+        ctx.sigma = sigma
+        ctx.gamma = gamma
+        ctx.save_for_backward(points, colors, accum_product, accum_weights)
+        return out_color
 
     @staticmethod
-    def backward(ctx, grad_idx, grad_zbuf, grad_dists):
+    def backward(ctx, grad_out_color):
+        import pydevd
+        pydevd.settrace(suspend=False, trace_only_current_thread=True)
         grad_points = None
+        grad_colors = None
         grad_cloud_to_packed_first_idx = None
         grad_num_points_per_cloud = None
         grad_image_height = None
@@ -167,12 +176,23 @@ class _RasterizePoints(torch.autograd.Function):
         grad_points_per_pixel = None
         grad_bin_size = None
         grad_max_points_per_bin = None
+        grad_znear = None
         grad_zfar = None
-        points, idx = ctx.saved_tensors
-        args = (points, idx, grad_zbuf, grad_dists)
+        grad_sigma = None
+        grad_gamma = None
+        radius = ctx.radius
+        znear = ctx.znear
+        zfar = ctx.zfar
+        sigma = ctx.sigma
+        gamma = ctx.gamma
+        points, colors, accum_product, accum_weights = ctx.saved_tensors
+        args = (points, colors, radius, znear, zfar, sigma, gamma, accum_product, accum_weights, grad_out_color)
         grad_points = _C.rasterize_points_backward(*args)
+        if torch.isnan(grad_points).any():
+            print("WTF?")
         grads = (
             grad_points,
+            grad_colors,
             grad_cloud_to_packed_first_idx,
             grad_num_points_per_cloud,
             grad_image_height,
@@ -181,7 +201,10 @@ class _RasterizePoints(torch.autograd.Function):
             grad_points_per_pixel,
             grad_bin_size,
             grad_max_points_per_bin,
-            grad_zfar
+            grad_znear,
+            grad_zfar,
+            grad_sigma,
+            grad_gamma
         )
         return grads
 

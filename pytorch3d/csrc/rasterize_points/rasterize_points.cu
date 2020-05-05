@@ -368,7 +368,7 @@ RasterizePointsGKCuda(
       sigma,
       gamma);
 
-   return std::make_tuple(accum_product, accum_weights, accum_weights);
+   return std::make_tuple(accum_product/(accum_weights + 0.0000001), accum_product, accum_weights);
 }
 
 
@@ -690,61 +690,108 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsFineCuda(
 // TODO(T55115174) Add more documentation for backward kernel.
 __global__ void RasterizePointsBackwardCudaKernel(
     const float* points, // (P, 3)
-    const int32_t* idxs, // (N, H, W, K)
+    const float* colors, // (P, C)
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
     const int N,
     const int P,
+    const int C,
     const int H,
     const int W,
-    const int K,
-    const float* grad_zbuf, // (N, H, W, K)
-    const float* grad_dists, // (N, H, W, K)
-    float* grad_points) { // (P, 3)
-  // Parallelized over each of K points per pixel, for each pixel in images of
-  // size H * W, for each image in the batch of size N.
-  int num_threads = gridDim.x * blockDim.x;
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  for (int i = tid; i < N * H * W * K; i += num_threads) {
-    // const int n = i / (H * W * K); // batch index (not needed).
-    const int yxk = i % (H * W * K);
-    const int yi = yxk / (W * K);
-    const int xk = yxk % (W * K);
-    const int xi = xk / K;
-    // k = xk % K (We don't actually need k, but this would be it.)
-    // Reverse ordering of X and Y axes.
-    const int yidx = yi;
-    const int xidx = xi;
+    const float* accum_product, // (N, C, H, W)
+    const float* accum_weights, // (N, 1, H, W)
+    const float* grad_out_color, // (N, C, H, W)
+    float *grad_points) // (P, 3)
+{
+    // Simple version: One thread per output pixel
+    const int num_threads = gridDim.x * blockDim.x;
+    const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    const float radius2 = radius * radius;
+    // TODO gkopanas more than 1 batches?
+    for (int i = tid; i < P ; i += num_threads) {
+        const float px_ndc = points[i * 3 + 0];
+        const float py_ndc = points[i * 3 + 1];
+        const float pz = points[i * 3 + 2];
 
-    const float xf = PixToNdc(xidx, W);
-    const float yf = PixToNdc(yidx, H);
+        const float px = NdcToPix(px_ndc, W);
+        const float py = NdcToPix(py_ndc, H);
+        const float radius_pixels_x = radius*W/2.0;
+        const float radius_pixels_y = radius*H/2.0;
 
-    const int p = idxs[i];
-    if (p < 0)
-      continue;
-    const float grad_dist2 = grad_dists[i];
-    const int p_ind = p * 3; // index into packed points tensor
-    const float px = points[p_ind + 0];
-    const float py = points[p_ind + 1];
-    const float dx = px - xf;
-    const float dy = py - yf;
-    const float grad_px = 2.0f * grad_dist2 * dx;
-    const float grad_py = 2.0f * grad_dist2 * dy;
-    const float grad_pz = grad_zbuf[i];
-    atomicAdd(grad_points + p_ind + 0, grad_px);
-    atomicAdd(grad_points + p_ind + 1, grad_py);
-    atomicAdd(grad_points + p_ind + 2, grad_pz);
-  }
+        //printf("i %d tid %d px_ndc %f py_ndc %f px %f py %f ry %f rx %f\n", i, tid, px_ndc, py_ndc, px, py, radius_pixels_y, radius_pixels_x);
+        int y_start = int(py - radius_pixels_y);
+        int y_finish = int(py + radius_pixels_y);
+        int x_start = int(px - radius_pixels_x);
+        int x_finish = int(px + radius_pixels_x);
+        //if (y_finish < 0 || y_start > H-1 || x_finish < 0 && x_start > W-1)
+        //    continue;
+        //printf("i %d tid %d y_start %d y_finish %d x_start %d x_finish %d\n", i, tid, y_start, y_finish, x_start, x_finish);
+        for (int y_idx = y_start; y_idx < y_finish + 1; y_idx++) {
+            for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
+                if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
+                    continue;
+                float dx = PixToNdc(x_idx, W) - px_ndc;
+                float dy = PixToNdc(y_idx, H) - py_ndc;
+                float dist2 = dx*dx + dy*dy;
+                if (dist2 > radius2)
+                    continue;
+                float dist = sqrtf(dist2);
+                float z_exponent = ((zfar - pz)/(zfar - znear))/gamma;
+                float gauss_exponent = -dist/(2*sigma*sigma);
+                float w = expf(gauss_exponent + z_exponent);
+
+                float sum_weights = accum_weights[0*H*W + y_idx*W + x_idx];
+                float sum_weights_2 = sum_weights*sum_weights + 0.0000001;
+                float dcp_dx = 0;
+                float dcp_dy = 0;
+                float dcp_dz = 0;
+                for (int f = 0; f < C; f++) {
+                    float grad_out_color_f = grad_out_color[0*C*H*W + f*H*W + y_idx*W + x_idx] ;
+                    float accum_product_f = accum_product[0*C*H*W + f*H*W + y_idx*W + x_idx];
+                    float point_f = colors[i*C + f];
+                    //xy
+                    float coef_xy = -1.0/(4*sigma*sigma);
+                    float dw_dx = 0;
+                    float dw_dy = 0;
+                    if (dist!=0.0) {
+                        dw_dx = coef_xy*(dx/(dist+0.0000001))*w;
+                        dw_dy = coef_xy*(dy/(dist+0.0000001))*w;
+                    }
+                    //z
+                    float dw_dz = -w/(gamma*(zfar-znear));
+
+                    dcp_dx += ((accum_product_f*dw_dx + point_f*dw_dx*sum_weights)/sum_weights_2)*grad_out_color_f;
+                    dcp_dy += ((accum_product_f*dw_dy + point_f*dw_dy*sum_weights)/sum_weights_2)*grad_out_color_f;
+                    dcp_dz += ((accum_product_f*dw_dz + point_f*dw_dz*sum_weights)/sum_weights_2)*grad_out_color_f;
+                }
+                grad_points[i*3 + 0] += dcp_dx;
+                grad_points[i*3 + 1] += dcp_dy;
+                grad_points[i*3 + 2] += dcp_dz;
+            }
+        }
+    }
 }
 
 torch::Tensor RasterizePointsBackwardCuda(
-    const torch::Tensor& points, // (N, P, 3)
-    const torch::Tensor& idxs, // (N, H, W, K)
-    const torch::Tensor& grad_zbuf, // (N, H, W, K)
-    const torch::Tensor& grad_dists) { // (N, H, W, K)
+    const torch::Tensor& points, // (P, 3)
+    const torch::Tensor& colors, // (P, 3)
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
+    const torch::Tensor& accum_product, // (N, C, H, W)
+    const torch::Tensor& accum_weights, // (N, 1, H, W)
+    const torch::Tensor& grad_out_color) // (N, C, H, W)
+{
   const int P = points.size(0);
-  const int N = idxs.size(0);
-  const int H = idxs.size(1);
-  const int W = idxs.size(2);
-  const int K = idxs.size(3);
+  const int N = accum_product.size(0);
+  const int C = accum_product.size(1);
+  const int H = accum_product.size(2);
+  const int W = accum_product.size(3);
 
   torch::Tensor grad_points = torch::zeros({P, 3}, points.options());
   const size_t blocks = 1024;
@@ -752,14 +799,20 @@ torch::Tensor RasterizePointsBackwardCuda(
 
   RasterizePointsBackwardCudaKernel<<<blocks, threads>>>(
       points.contiguous().data<float>(),
-      idxs.contiguous().data<int32_t>(),
+      colors.contiguous().data<float>(),
+      radius,
+      znear,
+      zfar,
+      sigma,
+      gamma,
       N,
       P,
+      C,
       H,
       W,
-      K,
-      grad_zbuf.contiguous().data<float>(),
-      grad_dists.contiguous().data<float>(),
+      accum_product.contiguous().data<float>(),
+      accum_weights.contiguous().data<float>(),
+      grad_out_color.contiguous().data<float>(),
       grad_points.contiguous().data<float>());
 
   return grad_points;

@@ -255,9 +255,15 @@ torch::Tensor RasterizePointsBackwardCpu(
 #ifdef WITH_CUDA
 torch::Tensor RasterizePointsBackwardCuda(
     const torch::Tensor& points,
-    const torch::Tensor& idxs,
-    const torch::Tensor& grad_zbuf,
-    const torch::Tensor& grad_dists);
+    const torch::Tensor& colors,
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
+    const torch::Tensor& accum_product,
+    const torch::Tensor& accum_weights,
+    const torch::Tensor& grad_out_color);
 #endif
 // Args:
 //  points: Tensor of shape (P, 3) giving (packed) positions for
@@ -276,17 +282,32 @@ torch::Tensor RasterizePointsBackwardCuda(
 //  grad_points: float32 Tensor of shape (N, P, 3) giving downstream gradients
 torch::Tensor RasterizePointsBackward(
     const torch::Tensor& points,
-    const torch::Tensor& idxs,
-    const torch::Tensor& grad_zbuf,
-    const torch::Tensor& grad_dists) {
+    const torch::Tensor& colors,
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
+    const torch::Tensor& accum_product,
+    const torch::Tensor& accum_weights,
+    const torch::Tensor& grad_out_color) {
   if (points.type().is_cuda()) {
 #ifdef WITH_CUDA
-    return RasterizePointsBackwardCuda(points, idxs, grad_zbuf, grad_dists);
+    return RasterizePointsBackwardCuda(points,
+                                       colors,
+                                       radius,
+                                       znear,
+                                       zfar,
+                                       sigma,
+                                       gamma,
+                                       accum_product,
+                                       accum_weights,
+                                       grad_out_color);
 #else
     AT_ERROR("Not compiled with GPU support");
 #endif
   } else {
-    return RasterizePointsBackwardCpu(points, idxs, grad_zbuf, grad_dists);
+    AT_ERROR("CPU Backwards Not implemented");
   }
 }
 
