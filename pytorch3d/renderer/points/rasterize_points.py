@@ -2,7 +2,7 @@
 
 from typing import Optional
 import torch
-
+import time
 from pytorch3d import _C
 from pytorch3d.renderer.mesh.rasterize_meshes import pix_to_ndc
 
@@ -17,7 +17,9 @@ def rasterize_points(
     points_per_pixel: int = 8,
     bin_size: Optional[int] = None,
     max_points_per_bin: Optional[int] = None,
-    zfar: float = -0.5
+    zfar: float = -0.5,
+    sigma: float = None,
+    gamma: float = None
 ):
     """
     Pointcloud rasterization
@@ -72,6 +74,7 @@ def rasterize_points(
         points_packed = pointclouds.points_packed()
     cloud_to_packed_first_idx = pointclouds.cloud_to_packed_first_idx()
     num_points_per_cloud = pointclouds.num_points_per_cloud()
+    colors = pointclouds.features_packed()
 
     if bin_size is None:
         if not points_packed.is_cuda:
@@ -95,6 +98,7 @@ def rasterize_points(
     # wrapper and call apply with positional args only
     return _RasterizePoints.apply(
         points_packed,
+        colors,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height,
@@ -103,7 +107,9 @@ def rasterize_points(
         points_per_pixel,
         bin_size,
         max_points_per_bin,
-        zfar
+        zfar,
+        sigma,
+        gamma
     )
 
 
@@ -112,6 +118,7 @@ class _RasterizePoints(torch.autograd.Function):
     def forward(
         ctx,
         points,  # (P, 3)
+        colors,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height: int = 256,
@@ -120,12 +127,15 @@ class _RasterizePoints(torch.autograd.Function):
         points_per_pixel: int = 8,
         bin_size: int = 0,
         max_points_per_bin: int = 0,
-        zfar: float = -0.5
+        zfar: float = -0.5,
+        sigma: float = None,
+        gamma: float = None
     ):
         # TODO: Add better error handling for when there are more than
         # max_points_per_bin in any bin.
         args = (
             points,
+            colors,
             cloud_to_packed_first_idx,
             num_points_per_cloud,
             image_height,
@@ -134,15 +144,23 @@ class _RasterizePoints(torch.autograd.Function):
             points_per_pixel,
             bin_size,
             max_points_per_bin,
-            zfar
+            zfar,
+            sigma,
+            gamma
         )
-        idx, zbuf, dists = _C.rasterize_points(*args)
+        torch.cuda.synchronize()
+        start = time.time()
+        idx, color, dists = _C.rasterize_points(*args)
+        torch.cuda.synchronize()
+        end = time.time()
+        print("Rasterize {}".format(end-start))
         ctx.save_for_backward(points, idx)
-        return idx, zbuf, dists
+        return idx, color, dists
 
     @staticmethod
     def backward(ctx, grad_idx, grad_zbuf, grad_dists):
         grad_points = None
+        grad_colors = None
         grad_cloud_to_packed_first_idx = None
         grad_num_points_per_cloud = None
         grad_image_height = None
@@ -152,11 +170,14 @@ class _RasterizePoints(torch.autograd.Function):
         grad_bin_size = None
         grad_max_points_per_bin = None
         grad_zfar = None
+        grad_sigma = None
+        grad_gamma = None
         points, idx = ctx.saved_tensors
         args = (points, idx, grad_zbuf, grad_dists)
         grad_points = _C.rasterize_points_backward(*args)
         grads = (
             grad_points,
+            grad_colors,
             grad_cloud_to_packed_first_idx,
             grad_num_points_per_cloud,
             grad_image_height,
@@ -165,7 +186,9 @@ class _RasterizePoints(torch.autograd.Function):
             grad_points_per_pixel,
             grad_bin_size,
             grad_max_points_per_bin,
-            grad_zfar
+            grad_zfar,
+            grad_sigma,
+            grad_gamma
         )
         return grads
 

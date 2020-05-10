@@ -20,6 +20,7 @@ __device__ inline float NdcToPix(float i, int S) {
 // we could use to make this more dynamic, but for now just fix a constant.
 // TODO: is 8 enough? Would increasing have performance considerations?
 const int32_t kMaxPointsPerPixel = 150;
+const int32_t kMaxPointPerPixelLocal = 150;
 
 template <typename T>
 __device__ inline void BubbleSort(T* arr, int n) {
@@ -32,6 +33,27 @@ __device__ inline void BubbleSort(T* arr, int n) {
       if (arr[j + 1] < arr[j]) {
         already_sorted = false;
         T temp = arr[j];
+        arr[j] = arr[j + 1];
+        arr[j + 1] = temp;
+      }
+    }
+    if (already_sorted)
+        break;
+  }
+}
+
+__device__ inline void BubbleSort2(int32_t* arr, const float* points, int n) {
+  bool already_sorted;
+  // Bubble sort. We only use it for tiny thread-local arrays (n < 8); in this
+  // regime we care more about warp divergence than computational complexity.
+  for (int i = 0; i < n - 1; ++i) {
+    already_sorted=true;
+    for (int j = 0; j < n - i - 1; ++j) {
+      float p_j0_z = points[arr[j]*3 + 2];
+      float p_j1_z = points[arr[j+1]*3 + 2];
+      if (p_j1_z < p_j0_z) {
+        already_sorted = false;
+        int32_t temp = arr[j];
         arr[j] = arr[j + 1];
         arr[j + 1] = temp;
       }

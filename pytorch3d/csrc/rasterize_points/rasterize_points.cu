@@ -199,9 +199,8 @@ RasterizePointsNaiveCuda(
 
 __global__ void OrderPointsGKCudaKernel(
     int32_t* point_idxs, // (N, H, W, K)
-    float* zbuf, // (N, H, W, K)
-    float* pix_dists,
     uint32_t* k_idxs,
+    const float* points,
     int H,
     int W,
     int K)
@@ -217,20 +216,113 @@ __global__ void OrderPointsGKCudaKernel(
     const int xi = pix_idx % W;
 
     int idx = 0 * H * W * K + yi * W * K + xi * K + 0;
-    Pix q[kMaxPointsPerPixel];
+    int32_t q[kMaxPointsPerPixel];
     int k = min(k_idxs[yi*W + xi], K);
     for (int i=0; i<k; i++) {
-        q[i].idx = point_idxs[idx + i];
-        q[i].z = zbuf[idx + i];
-        q[i].dist2 = pix_dists[idx + i];
+        q[i] = point_idxs[idx + i];
     }
-    BubbleSort(q, k);
+    BubbleSort2(q, points, k);
     for (int i=0; i<k; i++) {
-        point_idxs[idx + i] = q[i].idx;
-        zbuf[idx + i] = q[i].z;
-        pix_dists[idx + i] = q[i].dist2;
+        point_idxs[idx + i] = q[i];
     }
   }
+}
+
+__global__ void BlendPointsGKCudaKernel(
+    const float* points, // (P,3)
+    int32_t* point_idx, // (N, H, W, K)
+    const float* colors, // (P, 3)
+    const int32_t* k_idxs, // (N, H, W)
+    const float radius,
+    const float sigma,
+    const float gamma,
+    const int N,
+    const int H,
+    const int W,
+    const int K,
+    float* color) // (N, 3, H, W)
+{
+    int radius_pixels_x = int(radius*W/2.0 + 0.5);
+    int radius_pixels_y = int(radius*H/2.0 + 0.5);
+    float radius2 = radius*radius;
+    // One thread per output pixel
+    const int num_threads = gridDim.x * blockDim.x;
+    const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    for (int i = tid; i < H * W; i += num_threads) {
+        // Convert linear index to 3D index
+        const int pix_idx = i % (H * W);
+
+        const int yi = pix_idx / W;
+        const int xi = pix_idx % W;
+
+        Pix gathered_points[kMaxPointPerPixelLocal];
+        int y_start = yi - radius_pixels_y;
+        int y_finish = yi + radius_pixels_y;
+        int x_start = xi - radius_pixels_x;
+        int x_finish = xi + radius_pixels_x;
+        //if (y_finish < 0 || y_start > H-1 || x_finish < 0 && x_start > W-1)
+        //    continue;
+        //printf("i %d tid %d y_start %d y_finish %d x_start %d x_finish %d\n", i, tid, y_start, y_finish, x_start, x_finish);
+        int gathered_points_idx = 0;
+        for (int y_idx = y_start; y_idx < y_finish + 1; y_idx++) {
+            for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
+                if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
+                    continue;
+                int k = k_idxs[y_idx*W + x_idx];
+                int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + 0;
+                for (int i=0; i<k; i++) {
+
+                    int p_idx = point_idx[idx + i];
+                    float px_ndc = points[p_idx*3 + 0];
+                    float py_ndc = points[p_idx*3 + 1];
+                    float pz     = points[p_idx*3 + 2];
+
+                    float dx = PixToNdc(xi, W) - px_ndc;
+                    float dy = PixToNdc(yi, H) - py_ndc;
+                    float dists2 = dx*dx + dy*dy;
+                    if (dists2 > radius2)
+                        continue;
+                    gathered_points[gathered_points_idx].idx = p_idx;
+                    gathered_points[gathered_points_idx].dist2 = dists2;
+                    gathered_points[gathered_points_idx].z = pz;
+                    gathered_points_idx++;
+                    if (gathered_points_idx>=kMaxPointPerPixelLocal)
+                        printf("Pixel y:%d x:%d exceeded gathered_points_idx limit\n", y_idx, x_idx);
+                }
+            }
+        }
+        BubbleSort(gathered_points, gathered_points_idx);
+        int idx = 0 * H * W * K + yi * W * K + xi * K + 0;
+        float g_w[kMaxPointPerPixelLocal];
+        for (int ch=0; ch<3; ch++) {
+            float cum_alpha = 1.0;
+            float result=0.0;
+            //float *g_w = (float *)malloc(gathered_points_idx*sizeof(float));
+            for (int k=0; k<gathered_points_idx; k++) {
+                g_w[k] = exp(-sqrt(gathered_points[k].dist2)/(2*sigma*sigma));
+            }
+            /*float *g_d = new float[gathered_points_idx];
+            for (int k=0; k<gathered_points_idx - 1; k++) {
+                float tmp = ((gathered_points[k].z - gathered_points[k+1].dist2)*(1 + g_w[k] - g_w[k+1]))/gamma;
+                tmp = saturate(tmp);
+                g_d[k] = pow(1.5f, tmp) - 0.5;
+            }
+            g_d[gathered_points_idx-1] = 1.0;*/
+            for (int k=0; k<gathered_points_idx; k++) {
+                float g_d = 1.0;
+                if (k!=gathered_points_idx-1){
+                    /*TODO MISSING NORMALIZATION z=(zf-z)/(zf-zn)*/
+                    float tmp = ((gathered_points[k].z - gathered_points[k+1].z)*(1 + g_w[k] - g_w[k+1]))/gamma;
+                    tmp = saturate(tmp);
+                    g_d = pow(1.5f, tmp) - 0.5;
+                }
+                float alpha = g_w[k]*g_d;
+                result += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
+                cum_alpha = cum_alpha * (1 - alpha);
+            }
+            color[0*3*H*W + ch*H*W + yi*W + xi] = result;
+        }
+    }
 }
 
 __global__ void RasterizePointsGKCudaKernel(
@@ -244,14 +336,11 @@ __global__ void RasterizePointsGKCudaKernel(
     const int H,
     const int W,
     const int K,
-    int32_t* point_idxs, // (N, H, W, K)
-    float* zbuf, // (N, H, W, K)
-    float* pix_dists)  // (N, H, W, K)
+    int32_t* point_idxs) // (N, H, W, K)
 {
     // Simple version: One thread per output pixel
     const int num_threads = gridDim.x * blockDim.x;
     const int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    const float radius2 = radius * radius;
     // TODO gkopanas more than 1 batches?
     for (int i = tid; i < P ; i += num_threads) {
         const float px_ndc = points[i * 3 + 0];
@@ -260,53 +349,36 @@ __global__ void RasterizePointsGKCudaKernel(
 
         const float px = NdcToPix(px_ndc, W);
         const float py = NdcToPix(py_ndc, H);
-        const float radius_pixels_x = radius*W/2.0;
-        const float radius_pixels_y = radius*H/2.0;
 
-        //printf("i %d tid %d px_ndc %f py_ndc %f px %f py %f ry %f rx %f\n", i, tid, px_ndc, py_ndc, px, py, radius_pixels_y, radius_pixels_x);
-        int y_start = int(py - radius_pixels_y);
-        int y_finish = int(py + radius_pixels_y);
-        int x_start = int(px - radius_pixels_x);
-        int x_finish = int(px + radius_pixels_x);
-        //if (y_finish < 0 || y_start > H-1 || x_finish < 0 && x_start > W-1)
-        //    continue;
-        //printf("i %d tid %d y_start %d y_finish %d x_start %d x_finish %d\n", i, tid, y_start, y_finish, x_start, x_finish);
-        for (int y_idx = y_start; y_idx < y_finish + 1; y_idx++) {
-            for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
-                if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
-                    continue;
-                float dx = PixToNdc(x_idx, W) - px_ndc;
-                float dy = PixToNdc(y_idx, H) - py_ndc;
-                float dists2 = dx*dx + dy*dy;
-                if (dists2 > radius2)
-                    // This doesn't create divergence since all threads will skip in sync.
-                    continue;
+        const int px_rounded = int(px + 0.5);
+        const int py_rounded = int(py + 0.5);
+        if (py_rounded < 0 || py_rounded > H - 1 || px_rounded < 0 || px_rounded > W - 1)
+            continue;
 
-                int k_idx = atomicInc(&(k_idxs[0*H*W + y_idx*W + x_idx]), K + 1);
-                if (k_idx == K) {
-                    printf("Pixel y:%d x:%d exceeded point projection limit\n", y_idx, x_idx);
-                    assert(0);
-                }
-
-                int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + k_idx;
-                point_idxs[idx] = i;
-                zbuf[idx] = pz;
-                pix_dists[idx] = dx*dx + dy*dy;
-            }
+        int k_idx = atomicInc(&(k_idxs[0*H*W + py_rounded*W + px_rounded]), K + 1);
+        if (k_idx == K) {
+            printf("Pixel y:%d x:%d exceeded point projection limit\n", py_rounded, px_rounded);
+            assert(0);
         }
+
+        int idx = 0 * H * W * K + py_rounded * W * K + px_rounded * K + k_idx;
+        point_idxs[idx] = i;
     }
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points, // (P, 3)
+    const torch::Tensor& colors, // (P, C)
     const torch::Tensor& cloud_to_packed_first_idx, // (N)
     const torch::Tensor& num_points_per_cloud, // (N)
     const int image_height,
     const int image_width,
     const float radius,
     const int points_per_pixel,
-    const float zfar) {
+    const float zfar,
+    const float sigma,
+    const float gamma) {
 
   if (points.ndimension() != 2 || points.size(1) != 3) {
     AT_ERROR("points must have dimensions (num_points, 3)");
@@ -334,6 +406,7 @@ RasterizePointsGKCuda(
   torch::Tensor zbuf = torch::full({N, H, W, kMaxPointsPerPixel}, 2.0*zfar, float_opts);
   torch::Tensor pix_dists = torch::full({N, H, W, kMaxPointsPerPixel}, -1, float_opts);
   torch::Tensor k_idxs = torch::full({N, H, W}, 0, int_opts);
+  torch::Tensor color = torch::full({N, 3, H, W}, 0.0, float_opts);
 
   const size_t blocks = 1024;
   const size_t threads = 64;
@@ -349,26 +422,29 @@ RasterizePointsGKCuda(
       H,
       W,
       kMaxPointsPerPixel,
-      point_idxs.contiguous().data<int32_t>(),
-      zbuf.contiguous().data<float>(),
-      pix_dists.contiguous().data<float>());
+      point_idxs.contiguous().data<int32_t>());
 
   cudaDeviceSynchronize();
 
-  OrderPointsGKCudaKernel<<<blocks, threads>>>(
+  BlendPointsGKCudaKernel<<<blocks, threads>>>(
+      points.contiguous().data<float>(),
       point_idxs.contiguous().data<int32_t>(),
-      zbuf.contiguous().data<float>(),
-      pix_dists.contiguous().data<float>(),
-      (unsigned int *)k_idxs.data<int32_t>(),
+      colors.contiguous().data<float>(),
+      k_idxs.data<int32_t>(),
+      radius,
+      sigma,
+      gamma,
+      N,
       H,
       W,
-      kMaxPointsPerPixel);
+      kMaxPointsPerPixel,
+      color.contiguous().data<float>());
 
   point_idxs = point_idxs.narrow(-1, 0, K);
   zbuf = zbuf.narrow(-1, 0, K);
   pix_dists = pix_dists.narrow(-1, 0, K);
 
-  return std::make_tuple(point_idxs, zbuf, pix_dists);
+  return std::make_tuple(point_idxs, color, pix_dists);
 }
 
 
