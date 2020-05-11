@@ -152,7 +152,6 @@ class _RasterizePoints(torch.autograd.Function):
             sigma,
             gamma,
         )
-        print("WTF?")
         out_color, accum_product, accum_weights = _C.rasterize_points(*args)
         ctx.radius = radius
         ctx.znear = znear
@@ -164,8 +163,6 @@ class _RasterizePoints(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_out_color):
-        import pydevd
-        pydevd.settrace(suspend=False, trace_only_current_thread=True)
         grad_points = None
         grad_colors = None
         grad_cloud_to_packed_first_idx = None

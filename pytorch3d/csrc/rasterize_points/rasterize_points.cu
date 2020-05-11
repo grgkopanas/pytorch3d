@@ -754,12 +754,8 @@ __global__ void RasterizePointsBackwardCudaKernel(
                     float point_f = colors[i*C + f];
                     //xy
                     float coef_xy = -1.0/(2*sigma*sigma);
-                    float dw_dx = 0;
-                    float dw_dy = 0;
-                    if (dist!=0.0) {
-                        dw_dx = coef_xy*(dx/(dist+0.0000001))*w;
-                        dw_dy = coef_xy*(dy/(dist+0.0000001))*w;
-                    }
+                    float dw_dx = coef_xy*(dx/(dist+0.0000001))*w;
+                    float dw_dy = coef_xy*(dy/(dist+0.0000001))*w;
                     //z
                     float dw_dz = -w/(gamma*(zfar-znear));
 
