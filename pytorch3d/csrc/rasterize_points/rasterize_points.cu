@@ -753,7 +753,7 @@ __global__ void RasterizePointsBackwardCudaKernel(
                     float accum_product_f = accum_product[0*C*H*W + f*H*W + y_idx*W + x_idx];
                     float point_f = colors[i*C + f];
                     //xy
-                    float coef_xy = -1.0/(4*sigma*sigma);
+                    float coef_xy = -1.0/(2*sigma*sigma);
                     float dw_dx = 0;
                     float dw_dy = 0;
                     if (dist!=0.0) {
@@ -767,9 +767,9 @@ __global__ void RasterizePointsBackwardCudaKernel(
                     dcp_dy += ((accum_product_f*dw_dy + point_f*dw_dy*sum_weights)/sum_weights_2)*grad_out_color_f;
                     dcp_dz += ((accum_product_f*dw_dz + point_f*dw_dz*sum_weights)/sum_weights_2)*grad_out_color_f;
                 }
-                grad_points[i*3 + 0] += dcp_dx;
-                grad_points[i*3 + 1] += dcp_dy;
-                grad_points[i*3 + 2] += dcp_dz;
+                grad_points[i*3 + 0] = dcp_dx;
+                grad_points[i*3 + 1] = dcp_dy;
+                grad_points[i*3 + 2] = dcp_dz;
             }
         }
     }
