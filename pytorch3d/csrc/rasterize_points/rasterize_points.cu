@@ -367,7 +367,6 @@ RasterizePointsGKCuda(
       zfar,
       sigma,
       gamma);
-
    return std::make_tuple(accum_product/(accum_weights + 0.0000001), accum_product, accum_weights);
 }
 
@@ -759,13 +758,13 @@ __global__ void RasterizePointsBackwardCudaKernel(
                     //z
                     float dw_dz = -w/(gamma*(zfar-znear));
 
-                    dcp_dx += ((accum_product_f*dw_dx + point_f*dw_dx*sum_weights)/sum_weights_2)*grad_out_color_f;
-                    dcp_dy += ((accum_product_f*dw_dy + point_f*dw_dy*sum_weights)/sum_weights_2)*grad_out_color_f;
-                    dcp_dz += ((accum_product_f*dw_dz + point_f*dw_dz*sum_weights)/sum_weights_2)*grad_out_color_f;
+                    dcp_dx += ((-accum_product_f*dw_dx + point_f*dw_dx*sum_weights)/sum_weights_2)*grad_out_color_f;
+                    dcp_dy += ((-accum_product_f*dw_dy + point_f*dw_dy*sum_weights)/sum_weights_2)*grad_out_color_f;
+                    dcp_dz += ((-accum_product_f*dw_dz + point_f*dw_dz*sum_weights)/sum_weights_2)*grad_out_color_f;
                 }
-                grad_points[i*3 + 0] = dcp_dx;
-                grad_points[i*3 + 1] = dcp_dy;
-                grad_points[i*3 + 2] = dcp_dz;
+                grad_points[i*3 + 0] -= dcp_dx;
+                grad_points[i*3 + 1] -= dcp_dy;
+                grad_points[i*3 + 2] -= dcp_dz;
             }
         }
     }
