@@ -42,6 +42,7 @@ RasterizePointsGKCuda(
     const float radius,
     const int points_per_pixel,
     const float zfar,
+    const float znear,
     const float sigma,
     const float gamma);
 #endif
@@ -84,6 +85,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
     const float radius,
     const int points_per_pixel,
     const float zfar,
+    const float znear,
     const float sigma,
     const float gamma) {
   if (points.type().is_cuda() && cloud_to_packed_first_idx.type().is_cuda() &&
@@ -99,6 +101,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsNaive(
         radius,
         points_per_pixel,
         zfar,
+        znear,
         sigma,
         gamma);
 #else
@@ -244,9 +247,15 @@ torch::Tensor RasterizePointsBackwardCpu(
 #ifdef WITH_CUDA
 torch::Tensor RasterizePointsBackwardCuda(
     const torch::Tensor& points,
+    const torch::Tensor& colors,
     const torch::Tensor& idxs,
-    const torch::Tensor& grad_zbuf,
-    const torch::Tensor& grad_dists);
+    const torch::Tensor& k_idxs,
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
+    const torch::Tensor& grad_out_color);
 #endif
 // Args:
 //  points: Tensor of shape (P, 3) giving (packed) positions for
@@ -265,17 +274,25 @@ torch::Tensor RasterizePointsBackwardCuda(
 //  grad_points: float32 Tensor of shape (N, P, 3) giving downstream gradients
 torch::Tensor RasterizePointsBackward(
     const torch::Tensor& points,
+    const torch::Tensor& colors,
     const torch::Tensor& idxs,
-    const torch::Tensor& grad_zbuf,
-    const torch::Tensor& grad_dists) {
+    const torch::Tensor& k_idxs,
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
+    const torch::Tensor& grad_out_color) {
   if (points.type().is_cuda()) {
 #ifdef WITH_CUDA
-    return RasterizePointsBackwardCuda(points, idxs, grad_zbuf, grad_dists);
+    return RasterizePointsBackwardCuda(points, colors, idxs, k_idxs,
+                                       radius, znear, zfar, sigma,
+                                       gamma, grad_out_color);
 #else
     AT_ERROR("Not compiled with GPU support");
 #endif
   } else {
-    return RasterizePointsBackwardCpu(points, idxs, grad_zbuf, grad_dists);
+    AT_ERROR("No CPU support");
   }
 }
 
@@ -327,6 +344,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
     const int bin_size,
     const int max_points_per_bin,
     const float zfar,
+    const float znear,
     const float sigma,
     const float gamma) {
   if (bin_size == 0) {
@@ -341,22 +359,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
         radius,
         points_per_pixel,
         zfar,
+        znear,
         sigma,
         gamma);
   }
    else {
     // Use coarse-to-fine rasterization
-    const auto bin_points = RasterizePointsCoarse(
-        points,
-        cloud_to_packed_first_idx,
-        num_points_per_cloud,
-        image_height,
-        image_width,
-        radius,
-        bin_size,
-        max_points_per_bin);
-    return RasterizePointsFine(
-        points, bin_points, image_height, image_width, radius, bin_size, points_per_pixel, zfar);
+    AT_ERROR("API changed to two tensors so I removed coarse-to-fine\n");
   }
 }
 

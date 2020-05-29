@@ -240,6 +240,8 @@ __global__ void BlendPointsGKCudaKernel(
     const int H,
     const int W,
     const int K,
+    const float zfar,
+    const float znear,
     float* color) // (N, 3, H, W)
 {
     int radius_pixels_x = int(radius*W/2.0 + 0.5);
@@ -277,8 +279,8 @@ __global__ void BlendPointsGKCudaKernel(
                     float py_ndc = points[p_idx*3 + 1];
                     float pz     = points[p_idx*3 + 2];
 
-                    float dx = PixToNdc(xi, W) - px_ndc;
-                    float dy = PixToNdc(yi, H) - py_ndc;
+                    float dx = px_ndc - PixToNdc(xi, W);
+                    float dy = py_ndc - PixToNdc(yi, H);
                     float dists2 = dx*dx + dy*dy;
                     if (dists2 > radius2)
                         continue;
@@ -297,26 +299,27 @@ __global__ void BlendPointsGKCudaKernel(
         for (int ch=0; ch<3; ch++) {
             float cum_alpha = 1.0;
             float result=0.0;
-            //float *g_w = (float *)malloc(gathered_points_idx*sizeof(float));
             for (int k=0; k<gathered_points_idx; k++) {
-                g_w[k] = exp(-sqrt(gathered_points[k].dist2)/(2*sigma*sigma));
+                g_w[k] = exp(-gathered_points[k].dist2/(2*sigma*sigma));
             }
-            /*float *g_d = new float[gathered_points_idx];
-            for (int k=0; k<gathered_points_idx - 1; k++) {
-                float tmp = ((gathered_points[k].z - gathered_points[k+1].dist2)*(1 + g_w[k] - g_w[k+1]))/gamma;
-                tmp = saturate(tmp);
-                g_d[k] = pow(1.5f, tmp) - 0.5;
-            }
-            g_d[gathered_points_idx-1] = 1.0;*/
             for (int k=0; k<gathered_points_idx; k++) {
-                float g_d = 1.0;
+                float g_d;
                 if (k!=gathered_points_idx-1){
-                    /*TODO MISSING NORMALIZATION z=(zf-z)/(zf-zn)*/
-                    float tmp = ((gathered_points[k].z - gathered_points[k+1].z)*(1 + g_w[k] - g_w[k+1]))/gamma;
-                    tmp = saturate(tmp);
-                    g_d = pow(1.5f, tmp) - 0.5;
+                    float inv_z_k_1 = (zfar - gathered_points[k+1].z)/(zfar-znear);
+                    float inv_z_k = (zfar - gathered_points[k].z)/(zfar-znear);
+                    float dz = inv_z_k - inv_z_k_1;
+                    float dg = g_w[k] - g_w[k+1];
+                    float tmp = (dz*(1.0 + 1.0*dg))/gamma;
+                    //float tmp = (inv_z_k - inv_z_k_1)/gamma;
+                    g_d = saturate(exp(tmp) - 0.5);
                 }
-                float alpha = g_w[k]*g_d;
+                else {
+                    g_d = 1.0;
+                }
+
+
+                //float alpha = g_w[k]*g_d;
+                float alpha = pow(g_w[k], gamma);
                 result += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
                 cum_alpha = cum_alpha * (1 - alpha);
             }
@@ -377,6 +380,7 @@ RasterizePointsGKCuda(
     const float radius,
     const int points_per_pixel,
     const float zfar,
+    const float znear,
     const float sigma,
     const float gamma) {
 
@@ -403,8 +407,6 @@ RasterizePointsGKCuda(
   auto int_opts = points.options().dtype(torch::kInt32);
   auto float_opts = points.options().dtype(torch::kFloat32);
   torch::Tensor point_idxs = torch::full({N, H, W, kMaxPointsPerPixel}, -1, int_opts);
-  torch::Tensor zbuf = torch::full({N, H, W, kMaxPointsPerPixel}, 2.0*zfar, float_opts);
-  torch::Tensor pix_dists = torch::full({N, H, W, kMaxPointsPerPixel}, -1, float_opts);
   torch::Tensor k_idxs = torch::full({N, H, W}, 0, int_opts);
   torch::Tensor color = torch::full({N, 3, H, W}, 0.0, float_opts);
 
@@ -438,13 +440,13 @@ RasterizePointsGKCuda(
       H,
       W,
       kMaxPointsPerPixel,
+      zfar,
+      znear,
       color.contiguous().data<float>());
 
   point_idxs = point_idxs.narrow(-1, 0, K);
-  zbuf = zbuf.narrow(-1, 0, K);
-  pix_dists = pix_dists.narrow(-1, 0, K);
 
-  return std::make_tuple(point_idxs, color, pix_dists);
+  return std::make_tuple(point_idxs, color, k_idxs);
 }
 
 
@@ -765,57 +767,145 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> RasterizePointsFineCuda(
 // ****************************************************************************
 // TODO(T55115174) Add more documentation for backward kernel.
 __global__ void RasterizePointsBackwardCudaKernel(
-    const float* points, // (P, 3)
-    const int32_t* idxs, // (N, H, W, K)
-    const int N,
-    const int P,
-    const int H,
-    const int W,
-    const int K,
-    const float* grad_zbuf, // (N, H, W, K)
-    const float* grad_dists, // (N, H, W, K)
-    float* grad_points) { // (P, 3)
-  // Parallelized over each of K points per pixel, for each pixel in images of
-  // size H * W, for each image in the batch of size N.
-  int num_threads = gridDim.x * blockDim.x;
-  int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  for (int i = tid; i < N * H * W * K; i += num_threads) {
-    // const int n = i / (H * W * K); // batch index (not needed).
-    const int yxk = i % (H * W * K);
-    const int yi = yxk / (W * K);
-    const int xk = yxk % (W * K);
-    const int xi = xk / K;
-    // k = xk % K (We don't actually need k, but this would be it.)
-    // Reverse ordering of X and Y axes.
-    const int yidx = yi;
-    const int xidx = xi;
+        const float *points, // (P, 3)
+        const float *colors, // (F, 3)
+        const int32_t *idxs, // (N, H, W, K)
+        const int32_t *k_idxs,
+        const int N,
+        const int P,
+        const int H,
+        const int W,
+        const int K,
+        const float radius,
+        const float znear,
+        const float zfar,
+        const float sigma,
+        const float gamma,
+        float* grad_out_color,
+        float* grad_points) {
+    int radius_pixels_x = int(radius*W/2.0 + 0.5);
+    int radius_pixels_y = int(radius*H/2.0 + 0.5);
+    float radius2 = radius*radius;
+    // One thread per output pixel
+    const int num_threads = gridDim.x * blockDim.x;
+    const int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    for (int linearPixelIdx = tid; linearPixelIdx < H * W; linearPixelIdx += num_threads) {
+        // Convert linear index to 2D index
+        const int pix_idx = linearPixelIdx % (H * W);
 
-    const float xf = PixToNdc(xidx, W);
-    const float yf = PixToNdc(yidx, H);
+        const int yi = pix_idx / W;
+        const int xi = pix_idx % W;
 
-    const int p = idxs[i];
-    if (p < 0)
-      continue;
-    const float grad_dist2 = grad_dists[i];
-    const int p_ind = p * 3; // index into packed points tensor
-    const float px = points[p_ind + 0];
-    const float py = points[p_ind + 1];
-    const float dx = px - xf;
-    const float dy = py - yf;
-    const float grad_px = 2.0f * grad_dist2 * dx;
-    const float grad_py = 2.0f * grad_dist2 * dy;
-    const float grad_pz = grad_zbuf[i];
-    atomicAdd(grad_points + p_ind + 0, grad_px);
-    atomicAdd(grad_points + p_ind + 1, grad_py);
-    atomicAdd(grad_points + p_ind + 2, grad_pz);
-  }
+        Pix gathered_points[kMaxPointPerPixelLocal];
+        int y_start = yi - radius_pixels_y;
+        int y_finish = yi + radius_pixels_y;
+        int x_start = xi - radius_pixels_x;
+        int x_finish = xi + radius_pixels_x;
+        //if (y_finish < 0 || y_start > H-1 || x_finish < 0 && x_start > W-1)
+        //    continue;
+        //printf("i %d tid %d y_start %d y_finish %d x_start %d x_finish %d\n", i, tid, y_start, y_finish, x_start, x_finish);
+        int gathered_points_idx = 0;
+        for (int y_idx = y_start; y_idx < y_finish + 1; y_idx++) {
+            for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
+                if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
+                    continue;
+                int k = k_idxs[y_idx*W + x_idx];
+                int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + 0;
+                for (int i=0; i<k; i++) {
+
+                    int p_idx = idxs[idx + i];
+                    float px_ndc = points[p_idx*3 + 0];
+                    float py_ndc = points[p_idx*3 + 1];
+                    float pz     = points[p_idx*3 + 2];
+
+                    float dx = px_ndc - PixToNdc(xi, W);
+                    float dy = py_ndc - PixToNdc(yi, H);
+                    float dists2 = dx*dx + dy*dy;
+                    if (dists2 > radius2)
+                        continue;
+                    gathered_points[gathered_points_idx].idx = p_idx;
+                    gathered_points[gathered_points_idx].dist2 = dists2;
+                    gathered_points[gathered_points_idx].z = pz;
+                    gathered_points_idx++;
+                    if (gathered_points_idx>=kMaxPointPerPixelLocal)
+                        printf("Pixel y:%d x:%d exceeded gathered_points_idx limit\n", y_idx, x_idx);
+                }
+            }
+        }
+        BubbleSort(gathered_points, gathered_points_idx);
+        // Now we have all points(dists2, idx, z) in-order of z for pixel yi,xi
+        // for each color every point needs to go the the grad_buffer and add it's contribution to
+        // it's index.
+        int idx = 0 * H * W * K + yi * W * K + xi * K + 0;
+        float g_w[kMaxPointPerPixelLocal];
+        float w[kMaxPointPerPixelLocal];
+        float cum_alpha = 1.0;
+        float result=0.0;
+        for (int k=0; k<gathered_points_idx; k++) {
+            g_w[k] = exp(-gathered_points[k].dist2/(2*sigma*sigma));
+        }
+        for (int k=0; k<gathered_points_idx; k++) {
+            float g_d;
+            if (k!=gathered_points_idx-1){
+                float inv_z_k_1 = (zfar - gathered_points[k+1].z)/(zfar-znear);
+                float inv_z_k = (zfar - gathered_points[k].z)/(zfar-znear);
+                float dz = inv_z_k - inv_z_k_1;
+                float dg = g_w[k] - g_w[k+1];
+                float tmp = (dz*(1.0 + 1.0*dg))/gamma;
+                //float tmp = (inv_z_k - inv_z_k_1)/gamma;
+                g_d = saturate(exp(tmp) - 0.5);
+            }
+            else {
+                g_d = 1.0;
+            }
+            w[k] = pow(g_w[k], gamma);
+        }
+        for (int ch=0; ch<3; ch++) {
+            float grad_out_color_f  = grad_out_color[0*3*H*W + ch*H*W + yi*W + xi];
+            for (int k=0; k < gathered_points_idx; k++) {
+                float c_k = colors[gathered_points[k].idx*3 + ch];
+                float accum_prod_1 = 1.0;
+                for (int j=0; j<k; j++) {
+                    accum_prod_1 *= (1 - w[j]);
+                }
+
+                float accum_sum = 0;
+                for (int u=k+1; u < gathered_points_idx; u++) {
+                    float c_u = colors[gathered_points[u].idx*3 + ch];
+                    float accum_prod_2 = 1.0;
+                    for (int j=0; j < u; j++) {
+                        if (j==k) continue;
+                        accum_prod_2 *= (1 - w[j]);
+                    }
+                    accum_sum += c_u*w[u]*accum_prod_2;
+                }
+                float d_bN_w = c_k*accum_prod_1 - accum_sum;
+                float d_wk_x = -(gamma*2*(points[gathered_points[k].idx*3 + 0] - xi)*w[k])/(2*sigma*sigma);
+                //float d_wk_x = 0.0;
+                float d_wk_y = -(gamma*2*(points[gathered_points[k].idx*3 + 1] - yi)*w[k])/(2*sigma*sigma);
+                float d_wk_z = 0.0;
+                //if (gathered_points[k].idx == 0) {
+                //    printf("\t%d\t%d\t%f\t%f\t%f\t%f\n", xi, yi, d_bN_w, d_wk_x, d_wk_y,  grad_out_color_f);
+                //}
+                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 0]), -d_bN_w*d_wk_x*grad_out_color_f);
+                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 1]), -d_bN_w*d_wk_y*grad_out_color_f);
+                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 2]), -d_bN_w*d_wk_z*grad_out_color_f);
+            }
+        }
+    }
 }
 
 torch::Tensor RasterizePointsBackwardCuda(
     const torch::Tensor& points, // (N, P, 3)
+    const torch::Tensor& colors,
     const torch::Tensor& idxs, // (N, H, W, K)
-    const torch::Tensor& grad_zbuf, // (N, H, W, K)
-    const torch::Tensor& grad_dists) { // (N, H, W, K)
+    const torch::Tensor& k_idxs,
+    const float radius,
+    const float znear,
+    const float zfar,
+    const float sigma,
+    const float gamma,
+    const torch::Tensor& grad_out_color) {
   const int P = points.size(0);
   const int N = idxs.size(0);
   const int H = idxs.size(1);
@@ -828,14 +918,20 @@ torch::Tensor RasterizePointsBackwardCuda(
 
   RasterizePointsBackwardCudaKernel<<<blocks, threads>>>(
       points.contiguous().data<float>(),
+      colors.contiguous().data<float>(),
       idxs.contiguous().data<int32_t>(),
+      k_idxs.contiguous().data<int32_t>(),
       N,
       P,
       H,
       W,
       K,
-      grad_zbuf.contiguous().data<float>(),
-      grad_dists.contiguous().data<float>(),
+      radius,
+      znear,
+      zfar,
+      sigma,
+      gamma,
+      grad_out_color.contiguous().data<float>(),
       grad_points.contiguous().data<float>());
 
   return grad_points;

@@ -18,6 +18,7 @@ def rasterize_points(
     bin_size: Optional[int] = None,
     max_points_per_bin: Optional[int] = None,
     zfar: float = -0.5,
+    znear: float = -0.5,
     sigma: float = None,
     gamma: float = None
 ):
@@ -108,6 +109,7 @@ def rasterize_points(
         bin_size,
         max_points_per_bin,
         zfar,
+        znear,
         sigma,
         gamma
     )
@@ -128,6 +130,7 @@ class _RasterizePoints(torch.autograd.Function):
         bin_size: int = 0,
         max_points_per_bin: int = 0,
         zfar: float = -0.5,
+        znear: float = -0.5,
         sigma: float = None,
         gamma: float = None
     ):
@@ -145,20 +148,26 @@ class _RasterizePoints(torch.autograd.Function):
             bin_size,
             max_points_per_bin,
             zfar,
+            znear,
             sigma,
             gamma
         )
         torch.cuda.synchronize()
         start = time.time()
-        idx, color, dists = _C.rasterize_points(*args)
+        idx, color, k_idxs = _C.rasterize_points(*args)
         torch.cuda.synchronize()
         end = time.time()
         print("Rasterize {}".format(end-start))
-        ctx.save_for_backward(points, idx)
-        return idx, color, dists
+        ctx.radius = radius
+        ctx.znear = znear
+        ctx.zfar = zfar
+        ctx.sigma = sigma
+        ctx.gamma = gamma
+        ctx.save_for_backward(points, colors, idx, k_idxs)
+        return idx, color
 
     @staticmethod
-    def backward(ctx, grad_idx, grad_zbuf, grad_dists):
+    def backward(ctx, grad_idx, grad_out_color):
         grad_points = None
         grad_colors = None
         grad_cloud_to_packed_first_idx = None
@@ -170,11 +179,18 @@ class _RasterizePoints(torch.autograd.Function):
         grad_bin_size = None
         grad_max_points_per_bin = None
         grad_zfar = None
+        grad_znear = None
         grad_sigma = None
         grad_gamma = None
-        points, idx = ctx.saved_tensors
-        args = (points, idx, grad_zbuf, grad_dists)
+        radius = ctx.radius
+        znear = ctx.znear
+        zfar = ctx.zfar
+        sigma = ctx.sigma
+        gamma = ctx.gamma
+        points, colors, idx, k_idxs = ctx.saved_tensors
+        args = (points, colors, idx, k_idxs, radius, znear, zfar, sigma, gamma, grad_out_color)
         grad_points = _C.rasterize_points_backward(*args)
+        print(grad_points)
         grads = (
             grad_points,
             grad_colors,
@@ -187,6 +203,7 @@ class _RasterizePoints(torch.autograd.Function):
             grad_bin_size,
             grad_max_points_per_bin,
             grad_zfar,
+            grad_znear,
             grad_sigma,
             grad_gamma
         )

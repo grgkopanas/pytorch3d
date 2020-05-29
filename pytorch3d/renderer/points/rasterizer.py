@@ -27,6 +27,7 @@ class PointsRasterizationSettings(NamedTuple):
     bin_size: Optional[int] = None
     max_points_per_bin: Optional[int] = None
     zfar: float = None
+    znear: float = None
     sigma: float = None
     gamma: float = None
 
@@ -117,7 +118,7 @@ class PointsRasterizer(nn.Module):
             points_screen = None
 
         raster_settings = kwargs.get("raster_settings", self.raster_settings)
-        idx, color, dists2 = rasterize_points(
+        idx, color = rasterize_points(
             point_clouds,
             points_screen,
             image_height=raster_settings.image_height,
@@ -127,6 +128,7 @@ class PointsRasterizer(nn.Module):
             bin_size=raster_settings.bin_size,
             max_points_per_bin=raster_settings.max_points_per_bin,
             zfar=raster_settings.zfar,
+            znear=raster_settings.znear,
             sigma=raster_settings.sigma,
             gamma=raster_settings.gamma
         )
