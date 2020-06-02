@@ -190,7 +190,6 @@ class _RasterizePoints(torch.autograd.Function):
         points, colors, idx, k_idxs = ctx.saved_tensors
         args = (points, colors, idx, k_idxs, radius, znear, zfar, sigma, gamma, grad_out_color)
         grad_points = _C.rasterize_points_backward(*args)
-        print(grad_points)
         grads = (
             grad_points,
             grad_colors,

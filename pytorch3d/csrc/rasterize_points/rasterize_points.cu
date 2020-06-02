@@ -262,10 +262,10 @@ __global__ void BlendPointsGKCudaKernel(
         int y_finish = yi + radius_pixels_y;
         int x_start = xi - radius_pixels_x;
         int x_finish = xi + radius_pixels_x;
-        //if (y_finish < 0 || y_start > H-1 || x_finish < 0 && x_start > W-1)
-        //    continue;
-        //printf("i %d tid %d y_start %d y_finish %d x_start %d x_finish %d\n", i, tid, y_start, y_finish, x_start, x_finish);
+
         int gathered_points_idx = 0;
+        int gathered_points_idx_max = -1;
+        float gathered_points_z_max = -1000000.0;
         for (int y_idx = y_start; y_idx < y_finish + 1; y_idx++) {
             for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
                 if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
@@ -273,23 +273,44 @@ __global__ void BlendPointsGKCudaKernel(
                 int k = k_idxs[y_idx*W + x_idx];
                 int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + 0;
                 for (int i=0; i<k; i++) {
-
                     int p_idx = point_idx[idx + i];
                     float px_ndc = points[p_idx*3 + 0];
                     float py_ndc = points[p_idx*3 + 1];
                     float pz     = points[p_idx*3 + 2];
-
+                    if (pz < 0)
+                        // Don't render points behind the camera.
+                        continue;
                     float dx = px_ndc - PixToNdc(xi, W);
                     float dy = py_ndc - PixToNdc(yi, H);
                     float dists2 = dx*dx + dy*dy;
                     if (dists2 > radius2)
                         continue;
-                    gathered_points[gathered_points_idx].idx = p_idx;
-                    gathered_points[gathered_points_idx].dist2 = dists2;
-                    gathered_points[gathered_points_idx].z = pz;
-                    gathered_points_idx++;
-                    if (gathered_points_idx>=kMaxPointPerPixelLocal)
-                        printf("Pixel y:%d x:%d exceeded gathered_points_idx limit\n", y_idx, x_idx);
+
+                    if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
+                        if (pz < gathered_points_z_max) {
+                            gathered_points[gathered_points_idx_max].idx = p_idx;
+                            gathered_points[gathered_points_idx_max].dist2 = dists2;
+                            gathered_points[gathered_points_idx_max].z = pz;
+
+                            gathered_points_z_max = -1.0;
+                            for (int j=0; j<gathered_points_idx; j++) {
+                                if (gathered_points[j].z > gathered_points_z_max) {
+                                    gathered_points_idx_max = j;
+                                    gathered_points_z_max = gathered_points[j].z;
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        if (pz > gathered_points_z_max) {
+                            gathered_points_idx_max = i;
+                            gathered_points_z_max = pz;
+                        }
+                        gathered_points[gathered_points_idx].idx = p_idx;
+                        gathered_points[gathered_points_idx].dist2 = dists2;
+                        gathered_points[gathered_points_idx].z = pz;
+                        gathered_points_idx++;
+                    }
                 }
             }
         }
@@ -789,9 +810,9 @@ __global__ void RasterizePointsBackwardCudaKernel(
     // One thread per output pixel
     const int num_threads = gridDim.x * blockDim.x;
     const int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    for (int linearPixelIdx = tid; linearPixelIdx < H * W; linearPixelIdx += num_threads) {
-        // Convert linear index to 2D index
-        const int pix_idx = linearPixelIdx % (H * W);
+    for (int i = tid; i < H * W; i += num_threads) {
+        // Convert linear index to 3D index
+        const int pix_idx = i % (H * W);
 
         const int yi = pix_idx / W;
         const int xi = pix_idx % W;
@@ -801,10 +822,10 @@ __global__ void RasterizePointsBackwardCudaKernel(
         int y_finish = yi + radius_pixels_y;
         int x_start = xi - radius_pixels_x;
         int x_finish = xi + radius_pixels_x;
-        //if (y_finish < 0 || y_start > H-1 || x_finish < 0 && x_start > W-1)
-        //    continue;
-        //printf("i %d tid %d y_start %d y_finish %d x_start %d x_finish %d\n", i, tid, y_start, y_finish, x_start, x_finish);
+
         int gathered_points_idx = 0;
+        int gathered_points_idx_max = -1;
+        float gathered_points_z_max = -1000000.0;
         for (int y_idx = y_start; y_idx < y_finish + 1; y_idx++) {
             for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
                 if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
@@ -812,23 +833,45 @@ __global__ void RasterizePointsBackwardCudaKernel(
                 int k = k_idxs[y_idx*W + x_idx];
                 int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + 0;
                 for (int i=0; i<k; i++) {
-
                     int p_idx = idxs[idx + i];
                     float px_ndc = points[p_idx*3 + 0];
                     float py_ndc = points[p_idx*3 + 1];
                     float pz     = points[p_idx*3 + 2];
-
+                    if (pz < 0)
+                        // Don't render points behind the camera.
+                        continue;
                     float dx = px_ndc - PixToNdc(xi, W);
                     float dy = py_ndc - PixToNdc(yi, H);
                     float dists2 = dx*dx + dy*dy;
                     if (dists2 > radius2)
                         continue;
-                    gathered_points[gathered_points_idx].idx = p_idx;
-                    gathered_points[gathered_points_idx].dist2 = dists2;
-                    gathered_points[gathered_points_idx].z = pz;
-                    gathered_points_idx++;
-                    if (gathered_points_idx>=kMaxPointPerPixelLocal)
-                        printf("Pixel y:%d x:%d exceeded gathered_points_idx limit\n", y_idx, x_idx);
+
+                    if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
+                        if (pz < gathered_points_z_max) {
+                            gathered_points[gathered_points_idx_max].idx = p_idx;
+                            gathered_points[gathered_points_idx_max].dist2 = dists2;
+                            gathered_points[gathered_points_idx_max].z = pz;
+
+                            gathered_points_z_max = -1.0;
+                            for (int j=0; j<gathered_points_idx; j++) {
+                                if (gathered_points[j].z > gathered_points_z_max) {
+                                    gathered_points_idx_max = j;
+                                    gathered_points_z_max = gathered_points[j].z;
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        if (pz > gathered_points_z_max) {
+                            gathered_points_idx_max = i;
+                            gathered_points_z_max = pz;
+                        }
+
+                        gathered_points[gathered_points_idx].idx = p_idx;
+                        gathered_points[gathered_points_idx].dist2 = dists2;
+                        gathered_points[gathered_points_idx].z = pz;
+                        gathered_points_idx++;
+                    }
                 }
             }
         }
@@ -880,16 +923,16 @@ __global__ void RasterizePointsBackwardCudaKernel(
                     accum_sum += c_u*w[u]*accum_prod_2;
                 }
                 float d_bN_w = c_k*accum_prod_1 - accum_sum;
-                float d_wk_x = -(gamma*2*(points[gathered_points[k].idx*3 + 0] - xi)*w[k])/(2*sigma*sigma);
+                float d_wk_x = -(gamma*2*(points[gathered_points[k].idx*3 + 0] - PixToNdc(xi, W))*w[k])/(2*sigma*sigma);
                 //float d_wk_x = 0.0;
-                float d_wk_y = -(gamma*2*(points[gathered_points[k].idx*3 + 1] - yi)*w[k])/(2*sigma*sigma);
+                float d_wk_y = -(gamma*2*(points[gathered_points[k].idx*3 + 1] - PixToNdc(yi, H))*w[k])/(2*sigma*sigma);
                 float d_wk_z = 0.0;
                 //if (gathered_points[k].idx == 0) {
                 //    printf("\t%d\t%d\t%f\t%f\t%f\t%f\n", xi, yi, d_bN_w, d_wk_x, d_wk_y,  grad_out_color_f);
                 //}
-                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 0]), -d_bN_w*d_wk_x*grad_out_color_f);
-                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 1]), -d_bN_w*d_wk_y*grad_out_color_f);
-                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 2]), -d_bN_w*d_wk_z*grad_out_color_f);
+                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 0]), d_bN_w*d_wk_x*grad_out_color_f);
+                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 1]), d_bN_w*d_wk_y*grad_out_color_f);
+                atomicAdd(&(grad_points[gathered_points[k].idx*3 + 2]), d_bN_w*d_wk_z*grad_out_color_f);
             }
         }
     }
