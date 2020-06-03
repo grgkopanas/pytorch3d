@@ -260,7 +260,9 @@ __global__ void RasterizePointsGKCudaKernel(
         const float px_ndc = points[i * 3 + 0];
         const float py_ndc = points[i * 3 + 1];
         const float pz = points[i * 3 + 2];
-
+        if (pz < 0) {
+            continue;
+        }
         const float color_r = colors[i*3 + 0];
         const float color_g = colors[i*3 + 1];
         const float color_b = colors[i*3 + 2];
@@ -288,9 +290,9 @@ __global__ void RasterizePointsGKCudaKernel(
                 if (dist2 > radius2)
                     // This doesn't create divergence since all threads will skip in sync.
                     continue;
-                float dist = sqrtf(dist2);
+                //float dist = sqrtf(dist2);
                 float z_exponent = ((zfar - pz)/(zfar - znear))/gamma;
-                float gauss_exponent = -dist/(2*sigma*sigma);
+                float gauss_exponent = -dist2/(2*sigma*sigma);
                 float w = expf(gauss_exponent + z_exponent);
 
                 int idx_accum_weights = 0*H*W + y_idx*W + x_idx;
@@ -714,7 +716,9 @@ __global__ void RasterizePointsBackwardCudaKernel(
         const float px_ndc = points[i * 3 + 0];
         const float py_ndc = points[i * 3 + 1];
         const float pz = points[i * 3 + 2];
-
+        if (pz < 0) {
+            continue;
+        }
         const float px = NdcToPix(px_ndc, W);
         const float py = NdcToPix(py_ndc, H);
         const float radius_pixels_x = radius*W/2.0;
@@ -737,9 +741,9 @@ __global__ void RasterizePointsBackwardCudaKernel(
                 float dist2 = dx*dx + dy*dy;
                 if (dist2 > radius2)
                     continue;
-                float dist = sqrtf(dist2);
+                //float dist = sqrtf(dist2);
                 float z_exponent = ((zfar - pz)/(zfar - znear))/gamma;
-                float gauss_exponent = -dist/(2*sigma*sigma);
+                float gauss_exponent = -dist2/(2*sigma*sigma);
                 float w = expf(gauss_exponent + z_exponent);
 
                 float sum_weights = accum_weights[0*H*W + y_idx*W + x_idx];
@@ -752,9 +756,9 @@ __global__ void RasterizePointsBackwardCudaKernel(
                     float accum_product_f = accum_product[0*C*H*W + f*H*W + y_idx*W + x_idx];
                     float point_f = colors[i*C + f];
                     //xy
-                    float coef_xy = -1.0/(2*sigma*sigma);
-                    float dw_dx = coef_xy*(dx/(dist+0.0000001))*w;
-                    float dw_dy = coef_xy*(dy/(dist+0.0000001))*w;
+                    float coef_xy = -1.0/(sigma*sigma);
+                    float dw_dx = coef_xy*dx*w;
+                    float dw_dy = coef_xy*dy*w;
                     //z
                     float dw_dz = -w/(gamma*(zfar-znear));
 
