@@ -343,6 +343,9 @@ __global__ void BlendPointsGKCudaKernel(
                 float alpha = pow(g_w[k], gamma);
                 result += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
                 cum_alpha = cum_alpha * (1 - alpha);
+                if (cum_alpha<0.001) {
+                    break;
+                }
             }
             color[0*3*H*W + ch*H*W + yi*W + xi] = result;
         }
@@ -884,6 +887,7 @@ __global__ void RasterizePointsBackwardCudaKernel(
         float w[kMaxPointPerPixelLocal];
         float cum_alpha = 1.0;
         float result=0.0;
+        int num_points_contribute = 0;
         for (int k=0; k<gathered_points_idx; k++) {
             g_w[k] = exp(-gathered_points[k].dist2/(2*sigma*sigma));
         }
@@ -901,11 +905,17 @@ __global__ void RasterizePointsBackwardCudaKernel(
             else {
                 g_d = 1.0;
             }
-            w[k] = pow(g_w[k], gamma);
+            float alpha = pow(g_w[k], gamma);
+            w[k] = alpha;
+            cum_alpha = cum_alpha * (1 - alpha);
+            num_points_contribute = k+1;
+            if (cum_alpha<0.001) {
+                break;
+            }
         }
         for (int ch=0; ch<3; ch++) {
             float grad_out_color_f  = grad_out_color[0*3*H*W + ch*H*W + yi*W + xi];
-            for (int k=0; k < gathered_points_idx; k++) {
+            for (int k=0; k < num_points_contribute; k++) {
                 float c_k = colors[gathered_points[k].idx*3 + ch];
                 float accum_prod_1 = 1.0;
                 for (int j=0; j<k; j++) {
@@ -913,7 +923,7 @@ __global__ void RasterizePointsBackwardCudaKernel(
                 }
 
                 float accum_sum = 0;
-                for (int u=k+1; u < gathered_points_idx; u++) {
+                for (int u=k+1; u < num_points_contribute; u++) {
                     float c_u = colors[gathered_points[u].idx*3 + ch];
                     float accum_prod_2 = 1.0;
                     for (int j=0; j < u; j++) {
