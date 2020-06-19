@@ -152,22 +152,17 @@ class _RasterizePoints(torch.autograd.Function):
             sigma,
             gamma
         )
-        torch.cuda.synchronize()
-        start = time.time()
-        idx, color, k_idxs = _C.rasterize_points(*args)
-        torch.cuda.synchronize()
-        end = time.time()
-        print("Rasterize {}".format(end-start))
+        idx, color, k_idxs, depth = _C.rasterize_points(*args)
         ctx.radius = radius
         ctx.znear = znear
         ctx.zfar = zfar
         ctx.sigma = sigma
         ctx.gamma = gamma
         ctx.save_for_backward(points, colors, idx, k_idxs)
-        return idx, color
+        return idx, color, depth
 
     @staticmethod
-    def backward(ctx, grad_idx, grad_out_color):
+    def backward(ctx, grad_idx, grad_out_color, grad_depth):
         grad_points = None
         grad_colors = None
         grad_cloud_to_packed_first_idx = None

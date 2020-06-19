@@ -118,7 +118,7 @@ class PointsRasterizer(nn.Module):
             points_screen = None
 
         raster_settings = kwargs.get("raster_settings", self.raster_settings)
-        idx, color = rasterize_points(
+        idx, color, depth = rasterize_points(
             point_clouds,
             points_screen,
             image_height=raster_settings.image_height,
@@ -132,4 +132,4 @@ class PointsRasterizer(nn.Module):
             sigma=raster_settings.sigma,
             gamma=raster_settings.gamma
         )
-        return color
+        return color, depth

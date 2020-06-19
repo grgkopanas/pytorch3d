@@ -242,7 +242,8 @@ __global__ void BlendPointsGKCudaKernel(
     const int K,
     const float zfar,
     const float znear,
-    float* color) // (N, 3, H, W)
+    float* color, // (N, 3, H, W)
+    float* depth) // (N, 1, H, W)
 {
     int radius_pixels_x = int(radius*W/2.0 + 0.5);
     int radius_pixels_y = int(radius*H/2.0 + 0.5);
@@ -323,6 +324,8 @@ __global__ void BlendPointsGKCudaKernel(
             for (int k=0; k<gathered_points_idx; k++) {
                 g_w[k] = exp(-gathered_points[k].dist2/(2*sigma*sigma));
             }
+            float max_alpha = 0.0;
+            float best_depth = -1.0;
             for (int k=0; k<gathered_points_idx; k++) {
                 float g_d;
                 if (k!=gathered_points_idx-1){
@@ -342,12 +345,17 @@ __global__ void BlendPointsGKCudaKernel(
                 //float alpha = g_w[k]*g_d;
                 float alpha = pow(g_w[k], gamma);
                 result += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
+                if (cum_alpha * alpha > max_alpha) {
+                    max_alpha = cum_alpha*alpha;
+                    best_depth = (zfar - gathered_points[k].z)/(zfar-znear);
+                }
                 cum_alpha = cum_alpha * (1 - alpha);
                 if (cum_alpha<0.001) {
                     break;
                 }
             }
             color[0*3*H*W + ch*H*W + yi*W + xi] = result;
+            depth[0*3*H*W + 0*H*W + yi*W + xi] = best_depth;
         }
     }
 }
@@ -393,7 +401,7 @@ __global__ void RasterizePointsGKCudaKernel(
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points, // (P, 3)
     const torch::Tensor& colors, // (P, C)
@@ -433,6 +441,7 @@ RasterizePointsGKCuda(
   torch::Tensor point_idxs = torch::full({N, H, W, kMaxPointsPerPixel}, -1, int_opts);
   torch::Tensor k_idxs = torch::full({N, H, W}, 0, int_opts);
   torch::Tensor color = torch::full({N, 3, H, W}, 0.0, float_opts);
+  torch::Tensor depth = torch::full({N, 1, H, W}, -1.0, float_opts);
 
   const size_t blocks = 1024;
   const size_t threads = 64;
@@ -466,11 +475,12 @@ RasterizePointsGKCuda(
       kMaxPointsPerPixel,
       zfar,
       znear,
-      color.contiguous().data<float>());
+      color.contiguous().data<float>(),
+      depth.contiguous().data<float>());
 
   point_idxs = point_idxs.narrow(-1, 0, K);
 
-  return std::make_tuple(point_idxs, color, k_idxs);
+  return std::make_tuple(point_idxs, color, k_idxs, depth);
 }
 
 
