@@ -245,8 +245,8 @@ __global__ void BlendPointsGKCudaKernel(
     float* color, // (N, 3, H, W)
     float* depth) // (N, 1, H, W)
 {
-    int radius_pixels_x = int(radius*W/2.0 + 0.5);
-    int radius_pixels_y = int(radius*H/2.0 + 0.5);
+    //int radius_pixels_x = int(radius*W/2.0 + 0.5);
+    //int radius_pixels_y = int(radius*H/2.0 + 0.5);
     float radius2 = radius*radius;
     // One thread per output pixel
     const int num_threads = gridDim.x * blockDim.x;
@@ -259,10 +259,10 @@ __global__ void BlendPointsGKCudaKernel(
         const int xi = pix_idx % W;
 
         Pix gathered_points[kMaxPointPerPixelLocal];
-        int y_start = yi - radius_pixels_y;
-        int y_finish = yi + radius_pixels_y;
-        int x_start = xi - radius_pixels_x;
-        int x_finish = xi + radius_pixels_x;
+        int y_start = yi - radius;
+        int y_finish = yi + radius;
+        int x_start = xi - radius;
+        int x_finish = xi + radius;
 
         int gathered_points_idx = 0;
         int gathered_points_idx_max = -1;
@@ -281,8 +281,8 @@ __global__ void BlendPointsGKCudaKernel(
                     if (pz < 0)
                         // Don't render points behind the camera.
                         continue;
-                    float dx = px_ndc - PixToNdc(xi, W);
-                    float dy = py_ndc - PixToNdc(yi, H);
+                    float dx = NdcToPix(px_ndc, W) - xi;
+                    float dy = NdcToPix(py_ndc, H) - yi;
                     float dists2 = dx*dx + dy*dy;
                     if (dists2 > radius2)
                         continue;

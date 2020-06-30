@@ -115,6 +115,7 @@ class OpenGLPerspectiveCameras(TensorProperties):
 
         if not torch.is_tensor(fov):
             fov = torch.tensor(fov, device=self.device)
+
         tanHalfFov = torch.tan((fov / 2))
         top = tanHalfFov * znear
         bottom = -top
@@ -867,6 +868,203 @@ def _get_sfm_calibration_matrix(
 
     return K
 
+
+class NonSymmetricOpenGLPerspectiveCameras(TensorProperties):
+    """
+    A class which stores a batch of parameters to generate a batch of
+    projection matrices using the OpenGL convention for a perspective camera.
+
+    The extrinsics of the camera (R and T matrices) can also be set in the
+    initializer or passed in to `get_full_projection_transform` to get
+    the full transformation from world -> screen.
+
+    The `transform_points` method calculates the full world -> screen transform
+    and then applies it to the input points.
+
+    The transforms can also be returned separately as Transform3d objects.
+    """
+
+    def __init__(
+        self,
+        top,
+        bottom,
+        right,
+        left,
+        znear,
+        zfar,
+        R=r,
+        T=t,
+        device="cpu",
+    ):
+        """
+        __init__(self, znear, zfar, aspect_ratio, fov, degrees, R, T, device) -> None  # noqa
+
+        Args:
+            znear: near clipping plane of the view frustrum.
+            zfar: far clipping plane of the view frustrum.
+            aspect_ratio: ratio of screen_width/screen_height.
+            fov: field of view angle of the camera.
+            degrees: bool, set to True if fov is specified in degrees.
+            R: Rotation matrix of shape (N, 3, 3)
+            T: Translation matrix of shape (N, 3)
+            device: torch.device or string
+        """
+        # The initializer formats all inputs to torch tensors and broadcasts
+        # all the inputs to have the same batch dimension where necessary.
+        super().__init__(
+            device=device,
+            top=top,
+            bottom=bottom,
+            right=right,
+            left=left,
+            znear=znear,
+            zfar=zfar,
+            R=R,
+            T=T,
+        )
+
+
+    def get_projection_transform(self, **kwargs) -> Transform3d:
+        znear = kwargs.get("znear", self.znear)
+        zfar = kwargs.get("zfar", self.zfar)
+
+        top = kwargs.get("top", self.top)*znear # pyre-ignore[16]
+        bottom = kwargs.get("bottom", self.bottom)*znear  # pyre-ignore[16]
+        right = kwargs.get("right", self.right)*znear  # pyre-ignore[16]
+        left = kwargs.get("left", self.left)*znear
+
+        P = torch.zeros(
+            (self._N, 4, 4), device=self.device, dtype=torch.float32
+        )
+        ones = torch.ones((self._N), dtype=torch.float32, device=self.device)
+
+
+        # NOTE: In OpenGL the projection matrix changes the handedness of the
+        # coordinate frame. i.e the NDC space postive z direction is the
+        # camera space negative z direction. This is because the sign of the z
+        # in the projection matrix is set to -1.0.
+        # In pytorch3d we maintain a right handed coordinate system throughout
+        # so the so the z sign is 1.0.
+        z_sign = 1.0
+
+        P[:, 0, 0] = 2.0 * znear / (right - left)
+        P[:, 1, 1] = 2.0 * znear / (top - bottom)
+        P[:, 0, 2] = (right + left) / (right - left)
+        P[:, 1, 2] = (top + bottom) / (top - bottom)
+        P[:, 3, 2] = z_sign * ones
+
+        # NOTE: This part of the matrix is for z renormalization in OpenGL
+        # which maps the z to [-1, 1]. This won't work yet as the torch3d
+        # rasterizer ignores faces which have z < 0.
+        # P[:, 2, 2] = z_sign * (far + near) / (far - near)
+        # P[:, 2, 3] = -2.0 * far * near / (far - near)
+        # P[:, 3, 2] = z_sign * torch.ones((N))
+
+        # NOTE: This maps the z coordinate from [0, 1] where z = 0 if the point
+        # is at the near clipping plane and z = 1 when the point is at the far
+        # clipping plane. This replaces the OpenGL z normalization to [-1, 1]
+        # until rasterization is changed to clip at z = -1.
+        P[:, 2, 2] = z_sign * zfar / (zfar - znear)
+        P[:, 2, 3] = -(zfar * znear) / (zfar - znear)
+
+        # OpenGL uses column vectors so need to transpose the projection matrix
+        # as torch3d uses row vectors.
+        transform = Transform3d(device=self.device)
+        transform._matrix = P.transpose(1, 2).contiguous()
+        return transform
+
+    def clone(self):
+        other = NonSymmetricOpenGLPerspectiveCameras(device=self.device)
+        return super().clone(other)
+
+    def get_camera_center(self, **kwargs):
+        """
+        Return the 3D location of the camera optical center
+        in the world coordinates.
+
+        Args:
+            **kwargs: parameters for the camera extrinsics can be passed in
+                as keyword arguments to override the default values
+                set in __init__.
+
+        Setting T here will update the values set in init as this
+        value may be needed later on in the rendering pipeline e.g. for
+        lighting calculations.
+
+        Returns:
+            C: a batch of 3D locations of shape (N, 3) denoting
+            the locations of the center of each camera in the batch.
+        """
+        w2v_trans = self.get_world_to_view_transform(**kwargs)
+        P = w2v_trans.inverse().get_matrix()
+        # the camera center is the translation component (the first 3 elements
+        # of the last row) of the inverted world-to-view
+        # transform (4x4 RT matrix)
+        C = P[:, 3, :3]
+        return C
+
+    def get_world_to_view_transform(self, **kwargs) -> Transform3d:
+        """
+        Return the world-to-view transform.
+
+        Args:
+            **kwargs: parameters for the camera extrinsics can be passed in
+                as keyword arguments to override the default values
+                set in __init__.
+
+        Setting R and T here will update the values set in init as these
+        values may be needed later on in the rendering pipeline e.g. for
+        lighting calculations.
+
+        Returns:
+            T: a Transform3d object which represents a batch of transforms
+            of shape (N, 3, 3)
+        """
+        self.R = kwargs.get("R", self.R)  # pyre-ignore[16]
+        self.T = kwargs.get("T", self.T)  # pyre-ignore[16]
+        world_to_view_transform = get_world_to_view_transform(
+            R=self.R, T=self.T
+        )
+        return world_to_view_transform
+
+    def get_full_projection_transform(self, **kwargs) -> Transform3d:
+        """
+        Return the full world-to-screen transform composing the
+        world-to-view and view-to-screen transforms.
+
+        Args:
+            **kwargs: parameters for the projection transforms can be passed in
+                as keyword arguments to override the default values
+                set in __init__.
+
+        Setting R and T here will update the values set in init as these
+        values may be needed later on in the rendering pipeline e.g. for
+        lighting calculations.
+
+        Returns:
+            T: a Transform3d object which represents a batch of transforms
+            of shape (N, 3, 3)
+        """
+        self.R = kwargs.get("R", self.R)  # pyre-ignore[16]
+        self.T = kwargs.get("T", self.T)  # pyre-ignore[16]
+        world_to_view_transform = self.get_world_to_view_transform(
+            R=self.R, T=self.T
+        )
+        view_to_screen_transform = self.get_projection_transform(**kwargs)
+        return world_to_view_transform.compose(view_to_screen_transform)
+
+    def transform_points(self, points, **kwargs) -> torch.Tensor:
+        """
+        Transform input points from world to screen space.
+
+        Args:
+            points: torch tensor of shape (..., 3).
+
+        Returns
+            new_points: transformed points with the same shape as the input.
+        """
+        world_to_screen_transform = self.get_full_projection_transform(**kwargs)
+        return world_to_screen_transform.transform_points(points)
 
 ################################################
 # Helper functions for world to view transforms
