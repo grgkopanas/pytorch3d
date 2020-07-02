@@ -35,7 +35,8 @@ class OpenGLPerspectiveCameras(TensorProperties):
         znear=1.0,
         zfar=100.0,
         aspect_ratio=1.0,
-        fov=60.0,
+        fovy=60.0,
+        fovx=60.0,
         degrees: bool = True,
         R=r,
         T=t,
@@ -61,7 +62,8 @@ class OpenGLPerspectiveCameras(TensorProperties):
             znear=znear,
             zfar=zfar,
             aspect_ratio=aspect_ratio,
-            fov=fov,
+            fovy=fovy,
+            fovx=fovx,
             R=R,
             T=T,
         )
@@ -101,7 +103,9 @@ class OpenGLPerspectiveCameras(TensorProperties):
         """
         znear = kwargs.get("znear", self.znear)  # pyre-ignore[16]
         zfar = kwargs.get("zfar", self.zfar)  # pyre-ignore[16]
-        fov = kwargs.get("fov", self.fov)  # pyre-ignore[16]
+        fovy = kwargs.get("fovy", self.fovy)  # pyre-ignore[16]
+        fovx = kwargs.get("fovx", self.fovx)  # pyre-ignore[16]
+
         # pyre-ignore[16]
         aspect_ratio = kwargs.get("aspect_ratio", self.aspect_ratio)
         degrees = kwargs.get("degrees", self.degrees)
@@ -111,15 +115,20 @@ class OpenGLPerspectiveCameras(TensorProperties):
         )
         ones = torch.ones((self._N), dtype=torch.float32, device=self.device)
         if degrees:
-            fov = (np.pi / 180) * fov
+            fovy = (np.pi / 180) * fovy
+            fovx = (np.pi / 180) * fovx
 
-        if not torch.is_tensor(fov):
-            fov = torch.tensor(fov, device=self.device)
+        if not torch.is_tensor(fovy):
+            fovy = torch.tensor(fovy, device=self.device)
+            fovx = torch.tensor(fovx, device=self.device)
 
-        tanHalfFov = torch.tan((fov / 2))
-        top = tanHalfFov * znear
+
+        tanHalfFovY = torch.tan((fovy / 2))
+        tanHalfFovX = torch.tan((fovx / 2))
+
+        top = tanHalfFovY * znear
         bottom = -top
-        right = top * aspect_ratio
+        right = tanHalfFovX * znear
         left = -right
 
         # NOTE: In OpenGL the projection matrix changes the handedness of the
