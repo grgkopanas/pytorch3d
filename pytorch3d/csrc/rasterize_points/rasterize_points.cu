@@ -243,6 +243,7 @@ __global__ void BlendPointsGKCudaKernel(
     const float zfar,
     const float znear,
     float* color, // (N, 3, H, W)
+    float* mask, // (N, 1, H, W)
     float* depth) // (N, 1, H, W)
 {
     //int radius_pixels_x = int(radius*W/2.0 + 0.5);
@@ -317,45 +318,30 @@ __global__ void BlendPointsGKCudaKernel(
         }
         BubbleSort(gathered_points, gathered_points_idx);
         int idx = 0 * H * W * K + yi * W * K + xi * K + 0;
-        float g_w[kMaxPointPerPixelLocal];
+
+        float cum_alpha = 1.0;
+        float result[3] = {0.0, 0.0, 0.0};
+        float max_alpha = 0.0;
+        float best_depth = -1.0;
+        for (int k=0; k<gathered_points_idx; k++) {
+            float g_w = exp(-gathered_points[k].dist2/(2*sigma*sigma));
+            float alpha = pow(g_w, gamma);
+            for (int ch=0; ch<3; ch++) {
+                result[ch] += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
+            }
+            if (cum_alpha * alpha > max_alpha) {
+                max_alpha = cum_alpha*alpha;
+                best_depth = (zfar - gathered_points[k].z)/(zfar-znear);
+            }
+            cum_alpha = cum_alpha * (1 - alpha);
+            if (cum_alpha<0.001) {
+                break;
+            }
+        }
+        mask[0*3*H*W + 0*H*W + yi*W + xi] = 1.0 - cum_alpha;
+        depth[0*3*H*W + 0*H*W + yi*W + xi] = best_depth;
         for (int ch=0; ch<3; ch++) {
-            float cum_alpha = 1.0;
-            float result=0.0;
-            for (int k=0; k<gathered_points_idx; k++) {
-                g_w[k] = exp(-gathered_points[k].dist2/(2*sigma*sigma));
-            }
-            float max_alpha = 0.0;
-            float best_depth = -1.0;
-            for (int k=0; k<gathered_points_idx; k++) {
-                float g_d;
-                if (k!=gathered_points_idx-1){
-                    float inv_z_k_1 = (zfar - gathered_points[k+1].z)/(zfar-znear);
-                    float inv_z_k = (zfar - gathered_points[k].z)/(zfar-znear);
-                    float dz = inv_z_k - inv_z_k_1;
-                    float dg = g_w[k] - g_w[k+1];
-                    float tmp = (dz*(1.0 + 1.0*dg))/gamma;
-                    //float tmp = (inv_z_k - inv_z_k_1)/gamma;
-                    g_d = saturate(exp(tmp) - 0.5);
-                }
-                else {
-                    g_d = 1.0;
-                }
-
-
-                //float alpha = g_w[k]*g_d;
-                float alpha = pow(g_w[k], gamma);
-                result += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
-                if (cum_alpha * alpha > max_alpha) {
-                    max_alpha = cum_alpha*alpha;
-                    best_depth = (zfar - gathered_points[k].z)/(zfar-znear);
-                }
-                cum_alpha = cum_alpha * (1 - alpha);
-                if (cum_alpha<0.001) {
-                    break;
-                }
-            }
-            color[0*3*H*W + ch*H*W + yi*W + xi] = result;
-            depth[0*3*H*W + 0*H*W + yi*W + xi] = best_depth;
+            color[0*3*H*W + ch*H*W + yi*W + xi] = result[ch];
         }
     }
 }
@@ -401,7 +387,7 @@ __global__ void RasterizePointsGKCudaKernel(
     }
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points, // (P, 3)
     const torch::Tensor& colors, // (P, C)
@@ -442,6 +428,7 @@ RasterizePointsGKCuda(
   torch::Tensor k_idxs = torch::full({N, H, W}, 0, int_opts);
   torch::Tensor color = torch::full({N, 3, H, W}, 0.0, float_opts);
   torch::Tensor depth = torch::full({N, 1, H, W}, -1.0, float_opts);
+  torch::Tensor mask = torch::full({N, 1, H, W}, 0.0, float_opts);
 
   const size_t blocks = 1024;
   const size_t threads = 64;
@@ -476,11 +463,12 @@ RasterizePointsGKCuda(
       zfar,
       znear,
       color.contiguous().data<float>(),
+      mask.contiguous().data<float>(),
       depth.contiguous().data<float>());
 
   point_idxs = point_idxs.narrow(-1, 0, K);
 
-  return std::make_tuple(point_idxs, color, k_idxs, depth);
+  return std::make_tuple(point_idxs, color, k_idxs, depth, mask);
 }
 
 
@@ -892,29 +880,14 @@ __global__ void RasterizePointsBackwardCudaKernel(
         // for each color every point needs to go the the grad_buffer and add it's contribution to
         // it's index.
         int idx = 0 * H * W * K + yi * W * K + xi * K + 0;
-        float g_w[kMaxPointPerPixelLocal];
         float w[kMaxPointPerPixelLocal];
         float cum_alpha = 1.0;
         float result=0.0;
         int num_points_contribute = 0;
+
         for (int k=0; k<gathered_points_idx; k++) {
-            g_w[k] = exp(-gathered_points[k].dist2/(2*sigma*sigma));
-        }
-        for (int k=0; k<gathered_points_idx; k++) {
-            float g_d;
-            if (k!=gathered_points_idx-1){
-                float inv_z_k_1 = (zfar - gathered_points[k+1].z)/(zfar-znear);
-                float inv_z_k = (zfar - gathered_points[k].z)/(zfar-znear);
-                float dz = inv_z_k - inv_z_k_1;
-                float dg = g_w[k] - g_w[k+1];
-                float tmp = (dz*(1.0 + 1.0*dg))/gamma;
-                //float tmp = (inv_z_k - inv_z_k_1)/gamma;
-                g_d = saturate(exp(tmp) - 0.5);
-            }
-            else {
-                g_d = 1.0;
-            }
-            float alpha = pow(g_w[k], gamma);
+            float g_w = exp(-gathered_points[k].dist2/(2*sigma*sigma));
+            float alpha = pow(g_w, gamma);
             w[k] = alpha;
             cum_alpha = cum_alpha * (1 - alpha);
             num_points_contribute = k+1;

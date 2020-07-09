@@ -31,7 +31,7 @@ RasterizePointsNaiveCuda(
     const int points_per_pixel,
     const float zfar);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points,
     const torch::Tensor& colors,
@@ -75,7 +75,7 @@ RasterizePointsGKCuda(
 //  dists: float32 Tensor of shape (N, S, S, K) giving squared Euclidean
 //          distance in the (NDC) x/y plane between each pixel and its K closest
 //          points along the z axis.
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsNaive(
     const torch::Tensor& points,
     const torch::Tensor& colors,
@@ -333,7 +333,8 @@ torch::Tensor RasterizePointsBackward(
 //  dists: float32 Tensor of shape (N, S, S, K) giving squared Euclidean
 //         distance in the (NDC) x/y plane between each pixel and its K closest
 //         points along the z axis.
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> RasterizePoints(
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+RasterizePoints(
     const torch::Tensor& points,
     const torch::Tensor& colors,
     const torch::Tensor& cloud_to_packed_first_idx,
