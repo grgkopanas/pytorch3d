@@ -57,7 +57,7 @@ class PointsRasterizer(nn.Module):
         self.camera_gk = camera_gk
         self.raster_settings = raster_settings
 
-    def transform(self, point_clouds, hom_cloud=None, profile=False, **kwargs) -> torch.Tensor:
+    def transform(self, point_clouds, hom_cloud=None, **kwargs) -> torch.Tensor:
         """
         Args:
             point_clouds: a set of point clouds
@@ -70,11 +70,11 @@ class PointsRasterizer(nn.Module):
         be moved into forward.
         """
         if hom_cloud is not None:
-            full_proj_transform = self.camera_gk.full_proj_transform.get_matrix()
+            full_proj_transform = self.camera_gk.full_proj_transform
             pts_projected = hom_cloud.bmm(full_proj_transform)
             pts_projected_normalised = pts_projected/pts_projected[..., 3:]
 
-            view_transform = self.camera_gk.world_view_transform.get_matrix()
+            view_transform = self.camera_gk.world_view_transform
             points_viewspace = hom_cloud.bmm(view_transform)
             points_viewspace = points_viewspace/points_viewspace[..., 3:]
 
