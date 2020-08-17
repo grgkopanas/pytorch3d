@@ -662,7 +662,7 @@ def load_ply(f):
         or vertex.shape[1] != 3
     ):
         raise ValueError("Invalid vertices in file.")
-    verts = torch.tensor(vertex, dtype=torch.float32)
+    verts = torch.tensor(np.array(vertex), dtype=torch.float32)
 
     face_head = next(head for head in header.elements if head.name == "face")
     if (
