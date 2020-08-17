@@ -127,13 +127,15 @@ __device__ void CheckPixelInsideFace(
   // 2. the face has very small face area
   // 3. the pixel is outside the face bbox
   const float zmax = FloatMax3(v0.z, v1.z, v2.z);
+  const float zmin = FloatMin3(v0.z, v1.z, v2.z);
+
   const bool outside_bbox = CheckPointOutsideBoundingBox(
       v0, v1, v2, sqrt(blur_radius), pxy); // use sqrt of blur for bbox
   const float face_area = EdgeFunctionForward(v0xy, v1xy, v2xy);
   const bool zero_face_area =
       (face_area <= kEpsilon && face_area >= -1.0f * kEpsilon);
 
-  if (zmax < 0 || outside_bbox || zero_face_area) {
+  if (zmin < 1.0 || outside_bbox || zero_face_area) {
     return;
   }
 
