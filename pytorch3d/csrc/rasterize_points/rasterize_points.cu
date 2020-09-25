@@ -239,6 +239,7 @@ __global__ void BlendPointsGKCudaKernel(
     const int N,
     const int H,
     const int W,
+    const int P,
     const int K,
     const float zfar,
     const float znear,
@@ -272,10 +273,22 @@ __global__ void BlendPointsGKCudaKernel(
             for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
                 if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
                     continue;
+                if (y_idx*W + x_idx > W*H*N - 1) {
+                    printf("Hello darkness my old first friend\n");
+                    assert(0);
+                }
                 int k = k_idxs[y_idx*W + x_idx];
                 int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + 0;
                 for (int i=0; i<k; i++) {
+                    if (idx + i > W*H*N*K - 1) {
+                        printf("Hello darkness my old second friend\n");
+                        assert(0);
+                    }
                     int p_idx = point_idx[idx + i];
+                    if (p_idx*3 + 2 > P*3 - 1) {
+                        printf("Hello darkness my old third friend\n");
+                        assert(0);
+                    }
                     float px_ndc = points[p_idx*3 + 0];
                     float py_ndc = points[p_idx*3 + 1];
                     float pz     = points[p_idx*3 + 2];
@@ -290,12 +303,20 @@ __global__ void BlendPointsGKCudaKernel(
 
                     if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
                         if (pz < gathered_points_z_max) {
+                            if (gathered_points_idx_max > kMaxPointPerPixelLocal - 1) {
+                                printf("Hello darkness my old fourth friend\n");
+                                assert(0);
+                            }
                             gathered_points[gathered_points_idx_max].idx = p_idx;
                             gathered_points[gathered_points_idx_max].dist2 = dists2;
                             gathered_points[gathered_points_idx_max].z = pz;
 
                             gathered_points_z_max = -1.0;
                             for (int j=0; j<gathered_points_idx; j++) {
+                                if (j > kMaxPointPerPixelLocal - 1) {
+                                    printf("Hello darkness my old fourth friend\n");
+                                    assert(0);
+                                }
                                 if (gathered_points[j].z > gathered_points_z_max) {
                                     gathered_points_idx_max = j;
                                     gathered_points_z_max = gathered_points[j].z;
@@ -307,6 +328,10 @@ __global__ void BlendPointsGKCudaKernel(
                         if (pz > gathered_points_z_max) {
                             gathered_points_idx_max = i;
                             gathered_points_z_max = pz;
+                        }
+                        if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
+                            printf("Hello darkness my old fourth friend\n");
+                            assert(0);
                         }
                         gathered_points[gathered_points_idx].idx = p_idx;
                         gathered_points[gathered_points_idx].dist2 = dists2;
@@ -324,9 +349,17 @@ __global__ void BlendPointsGKCudaKernel(
         float max_alpha = 0.0;
         float best_depth = -1.0;
         for (int k=0; k<gathered_points_idx; k++) {
+            if (k > kMaxPointPerPixelLocal - 1) {
+                printf("Hello darkness my old fifth friend\n");
+                assert(0);
+            }
             float g_w = exp(-gathered_points[k].dist2/(2*sigma*sigma));
             float alpha = pow(g_w, gamma);
             for (int ch=0; ch<3; ch++) {
+                if (3*gathered_points[k].idx + ch > P*3 - 1) {
+                    printf("Hello darkness my old fifth friend\n");
+                    assert(0);
+                }
                 result[ch] += colors[3*gathered_points[k].idx + ch] * cum_alpha * alpha;
             }
             if (cum_alpha * alpha > max_alpha) {
@@ -338,9 +371,17 @@ __global__ void BlendPointsGKCudaKernel(
                 break;
             }
         }
+        if (0*3*H*W + 0*H*W + yi*W + xi > N*1*H*W - 1) {
+            printf("Hello darkness my old fifth friend\n");
+            assert(0);
+        }
         mask[0*3*H*W + 0*H*W + yi*W + xi] = 1.0 - cum_alpha;
         depth[0*3*H*W + 0*H*W + yi*W + xi] = best_depth;
         for (int ch=0; ch<3; ch++) {
+            if (0*3*H*W + ch*H*W + yi*W + xi > N*3*H*W - 1) {
+                printf("Hello darkness my old fifth friend\n");
+                assert(0);
+            }
             color[0*3*H*W + ch*H*W + yi*W + xi] = result[ch];
         }
     }
@@ -459,6 +500,7 @@ RasterizePointsGKCuda(
       N,
       H,
       W,
+      P,
       kMaxPointsPerPixel,
       zfar,
       znear,
@@ -792,7 +834,7 @@ __global__ void RasterizePointsBackwardCudaKernel(
         const float *points, // (P, 3)
         const float *colors, // (F, 3)
         const int32_t *idxs, // (N, H, W, K)
-        const int32_t *k_idxs,
+        const int32_t *k_idxs, // (N, H, W)
         const int N,
         const int P,
         const int H,
@@ -831,10 +873,22 @@ __global__ void RasterizePointsBackwardCudaKernel(
             for (int x_idx = x_start; x_idx <  x_finish + 1; x_idx++) {
                 if (y_idx < 0 || y_idx > H - 1 || x_idx < 0 || x_idx > W - 1)
                     continue;
+                if (y_idx*W + x_idx > N*H*W - 1) {
+                    printf("THE FAIL\n");
+                    assert(0);
+                }
                 int k = k_idxs[y_idx*W + x_idx];
                 int idx = 0 * H * W * K + y_idx * W * K + x_idx * K + 0;
                 for (int i=0; i<k; i++) {
+                    if (idx + i > N*H*W*K - 1) {
+                        printf("THE FAIL\n");
+                        assert(0);
+                    }
                     int p_idx = idxs[idx + i];
+                    if (p_idx*3 + 2 > P*3 - 1) {
+                        printf("THE FAIL\n");
+                        assert(0);
+                    }
                     float px_ndc = points[p_idx*3 + 0];
                     float py_ndc = points[p_idx*3 + 1];
                     float pz     = points[p_idx*3 + 2];
@@ -849,12 +903,20 @@ __global__ void RasterizePointsBackwardCudaKernel(
 
                     if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
                         if (pz < gathered_points_z_max) {
+                            if (gathered_points_idx_max > kMaxPointPerPixelLocal - 1) {
+                                printf("THE FAIL\n");
+                                assert(0);
+                            }
                             gathered_points[gathered_points_idx_max].idx = p_idx;
                             gathered_points[gathered_points_idx_max].dist2 = dists2;
                             gathered_points[gathered_points_idx_max].z = pz;
 
                             gathered_points_z_max = -1.0;
                             for (int j=0; j<gathered_points_idx; j++) {
+                                if (j > kMaxPointPerPixelLocal - 1) {
+                                    printf("THE FAIL\n");
+                                    assert(0);
+                                }
                                 if (gathered_points[j].z > gathered_points_z_max) {
                                     gathered_points_idx_max = j;
                                     gathered_points_z_max = gathered_points[j].z;
@@ -866,6 +928,10 @@ __global__ void RasterizePointsBackwardCudaKernel(
                         if (pz > gathered_points_z_max) {
                             gathered_points_idx_max = i;
                             gathered_points_z_max = pz;
+                        }
+                        if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
+                            printf("THE FAIL\n");
+                            assert(0);
                         }
                         gathered_points[gathered_points_idx].idx = p_idx;
                         gathered_points[gathered_points_idx].dist2 = dists2;
@@ -886,6 +952,10 @@ __global__ void RasterizePointsBackwardCudaKernel(
         int num_points_contribute = 0;
 
         for (int k=0; k<gathered_points_idx; k++) {
+            if (k > kMaxPointPerPixelLocal - 1) {
+                printf("THE FAIL\n");
+                assert(0);
+            }
             float g_w = exp(-gathered_points[k].dist2/(2*sigma*sigma));
             float alpha = pow(g_w, gamma);
             w[k] = alpha;
@@ -896,25 +966,58 @@ __global__ void RasterizePointsBackwardCudaKernel(
             }
         }
         for (int ch=0; ch<3; ch++) {
+            if (0*3*H*W + ch*H*W + yi*W + xi > N*H*W*3 - 1) {
+                printf(" THE FAIL \n");
+                assert(0);
+            }
             float grad_out_color_f  = grad_out_color[0*3*H*W + ch*H*W + yi*W + xi];
             for (int k=0; k < num_points_contribute; k++) {
+                if (k > kMaxPointPerPixelLocal -1) {
+                    printf("fail\n");
+                    assert(0);
+                }
+
+                if (gathered_points[k].idx*3 + ch > P*3 -1) {
+                    printf("fail\n");
+                    assert(0);
+                }
                 float c_k = colors[gathered_points[k].idx*3 + ch];
                 float accum_prod_1 = 1.0;
                 for (int j=0; j<k; j++) {
+                    if (j > kMaxPointPerPixelLocal-1) {
+                        printf("oops\n");
+                        assert(0);
+                    }
                     accum_prod_1 *= (1 - w[j]);
                 }
 
                 float accum_sum = 0;
                 for (int u=k+1; u < num_points_contribute; u++) {
+                    if (u > kMaxPointPerPixelLocal-1) {
+                        printf("failed\n");
+                        assert(0);
+                    }
+                    if (gathered_points[u].idx*3 + ch > P*3 - 1) {
+                        printf("failed\n");
+                        assert(0);
+                    }
                     float c_u = colors[gathered_points[u].idx*3 + ch];
                     float accum_prod_2 = 1.0;
                     for (int j=0; j < u; j++) {
                         if (j==k) continue;
+                        if (j>kMaxPointPerPixelLocal-1) {
+                            printf("failed\n");
+                            assert(0);
+                        }
                         accum_prod_2 *= (1 - w[j]);
                     }
                     accum_sum += c_u*w[u]*accum_prod_2;
                 }
                 float d_bN_w = c_k*accum_prod_1 - accum_sum;
+                if (gathered_points[k].idx*3 + 2 > P*3 - 1) {
+                    printf("skata\n");
+                    assert(0);
+                }
                 float d_wk_x = -(gamma*2*(points[gathered_points[k].idx*3 + 0] - PixToNdc(xi, W))*w[k])/(2*sigma*sigma);
                 //float d_wk_x = 0.0;
                 float d_wk_y = -(gamma*2*(points[gathered_points[k].idx*3 + 1] - PixToNdc(yi, H))*w[k])/(2*sigma*sigma);
@@ -950,7 +1053,17 @@ torch::Tensor RasterizePointsBackwardCuda(
   torch::Tensor grad_points = torch::zeros({P, 3}, points.options());
   const size_t blocks = 1024;
   const size_t threads = 64;
-
+  std::cout << "points " << points.sizes() << "colors " << colors.sizes() << "idxs "<< idxs.sizes() <<
+          "k_idxs " << k_idxs.sizes() << "grad_out_color " << grad_out_color.sizes() <<
+          "grad_points " << grad_points.sizes() << std::endl;
+  printf("points %p %p\ncolors %p %p\nidxs %p %p\nk_idxs %p %p\ngrad_out_color %p %p\ngrad_points %p %p\n",
+          points.contiguous().data<float>(), points.contiguous().data<float>() + points.numel(),
+          colors.contiguous().data<float>(), colors.contiguous().data<float>() + colors.numel(),
+          idxs.contiguous().data<int32_t>(), idxs.contiguous().data<int32_t>() + idxs.numel(),
+          k_idxs.contiguous().data<int32_t>(), k_idxs.contiguous().data<int32_t>() + k_idxs.numel(),
+          grad_out_color.contiguous().data<float>(), grad_out_color.contiguous().data<float>() + grad_out_color.numel(),
+          grad_points.contiguous().data<float>(), grad_points.contiguous().data<float>() + grad_points.numel());
+  std::cout << "=============" << std::endl;
   RasterizePointsBackwardCudaKernel<<<blocks, threads>>>(
       points.contiguous().data<float>(),
       colors.contiguous().data<float>(),
