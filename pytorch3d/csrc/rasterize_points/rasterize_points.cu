@@ -285,9 +285,12 @@ __global__ void BlendPointsGKCudaKernel(
                     float dx = NdcToPix(px_ndc, W) - xi;
                     float dy = NdcToPix(py_ndc, H) - yi;
                     float dists2 = dx*dx + dy*dy;
+                    // Trim it to a circle
                     if (dists2 > radius2)
                         continue;
 
+                    // If more than kMaxPointPerPixelLocal we need to compare against the max z
+                    // if we are closer we replace our selves and search for the max again
                     if (gathered_points_idx > kMaxPointPerPixelLocal - 1) {
                         if (pz < gathered_points_z_max) {
                             gathered_points[gathered_points_idx_max].idx = p_idx;
@@ -466,7 +469,7 @@ RasterizePointsGKCuda(
       mask.contiguous().data<float>(),
       depth.contiguous().data<float>());
 
-  point_idxs = point_idxs.narrow(-1, 0, K);
+  //point_idxs = point_idxs.narrow(-1, 0, K);
 
   return std::make_tuple(point_idxs, color, k_idxs, depth, mask);
 }
