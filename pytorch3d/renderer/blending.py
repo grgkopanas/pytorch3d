@@ -12,7 +12,6 @@ import torch
 
 # Data class to store blending params with defaults
 class BlendParams(NamedTuple):
-    sigma: float = 1e-4
     gamma: float = 1e-4
     background_color: Sequence = (1.0, 1.0, 1.0)
 

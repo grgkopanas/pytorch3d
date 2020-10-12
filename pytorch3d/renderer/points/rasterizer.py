@@ -22,13 +22,11 @@ class PointFragments(NamedTuple):
 class PointsRasterizationSettings(NamedTuple):
     image_height: int = 256
     image_width: int =256
-    radius: float = 0.01
     points_per_pixel: int = 8
     bin_size: Optional[int] = None
     max_points_per_bin: Optional[int] = None
     zfar: float = None
     znear: float = None
-    sigma: float = None
     gamma: float = None
 
 
@@ -104,7 +102,7 @@ class PointsRasterizer(nn.Module):
         point_clouds = point_clouds.offset(pts_packed_offset)
         return point_clouds
 
-    def forward(self, point_clouds, hom_point_cloud=None, profile=False, **kwargs) -> PointFragments:
+    def forward(self, point_clouds, sigmas, max_radius, hom_point_cloud=None, **kwargs) -> PointFragments:
         """
         Args:
             point_clouds: a set of point clouds with coordinates in world space.
@@ -121,15 +119,15 @@ class PointsRasterizer(nn.Module):
         idx, color, depth, mask = rasterize_points(
             point_clouds,
             points_screen,
+            sigmas,
+            max_radius,
             image_height=raster_settings.image_height,
             image_width=raster_settings.image_width,
-            radius=raster_settings.radius,
             points_per_pixel=raster_settings.points_per_pixel,
             bin_size=raster_settings.bin_size,
             max_points_per_bin=raster_settings.max_points_per_bin,
             zfar=raster_settings.zfar,
             znear=raster_settings.znear,
-            sigma=raster_settings.sigma,
             gamma=raster_settings.gamma
         )
         return color, depth, mask

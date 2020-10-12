@@ -11,15 +11,15 @@ from pytorch3d.renderer.mesh.rasterize_meshes import pix_to_ndc
 def rasterize_points(
     pointclouds,
     points,
+    sigmas,
+    max_radius,
     image_height: int = 256,
     image_width: int = 256,
-    radius: float = 0.01,
     points_per_pixel: int = 8,
     bin_size: Optional[int] = None,
     max_points_per_bin: Optional[int] = None,
     zfar: float = -0.5,
     znear: float = -0.5,
-    sigma: float = None,
     gamma: float = None
 ):
     """
@@ -100,17 +100,17 @@ def rasterize_points(
     return _RasterizePoints.apply(
         points_packed,
         colors,
+        sigmas,
+        max_radius,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height,
         image_width,
-        radius,
         points_per_pixel,
         bin_size,
         max_points_per_bin,
         zfar,
         znear,
-        sigma,
         gamma
     )
 
@@ -120,18 +120,18 @@ class _RasterizePoints(torch.autograd.Function):
     def forward(
         ctx,
         points,  # (P, 3)
-        colors,
+        colors,  # (P, C)
+        sigmas,  # (P, 1)
+        max_radius,
         cloud_to_packed_first_idx,
         num_points_per_cloud,
         image_height: int = 256,
         image_width: int = 256,
-        radius: float = 0.01,
         points_per_pixel: int = 8,
         bin_size: int = 0,
         max_points_per_bin: int = 0,
         zfar: float = -0.5,
         znear: float = -0.5,
-        sigma: float = None,
         gamma: float = None
     ):
         # TODO: Add better error handling for when there are more than
@@ -139,66 +139,64 @@ class _RasterizePoints(torch.autograd.Function):
         args = (
             points,
             colors,
+            sigmas,
+            max_radius,
             cloud_to_packed_first_idx,
             num_points_per_cloud,
             image_height,
             image_width,
-            radius,
             points_per_pixel,
             bin_size,
             max_points_per_bin,
             zfar,
             znear,
-            sigma,
             gamma
         )
         idx, color, k_idxs, depth, mask = _C.rasterize_points(*args)
-        ctx.radius = radius
         ctx.znear = znear
         ctx.zfar = zfar
-        ctx.sigma = sigma
         ctx.gamma = gamma
-        ctx.save_for_backward(points, colors, idx, k_idxs)
+        ctx.max_radius = max_radius
+        ctx.save_for_backward(points, colors, sigmas, idx, k_idxs)
         return idx, color, depth, mask
 
     @staticmethod
     def backward(ctx, grad_idx, grad_out_color, grad_depth, grad_mask):
         grad_points = None
         grad_colors = None
+        grad_sigmas = None
+        grad_max_radius = None
         grad_cloud_to_packed_first_idx = None
         grad_num_points_per_cloud = None
         grad_image_height = None
         grad_image_width = None
-        grad_radius = None
         grad_points_per_pixel = None
         grad_bin_size = None
         grad_max_points_per_bin = None
         grad_zfar = None
         grad_znear = None
-        grad_sigma = None
         grad_gamma = None
-        radius = ctx.radius
         znear = ctx.znear
         zfar = ctx.zfar
-        sigma = ctx.sigma
         gamma = ctx.gamma
-        points, colors, idx, k_idxs = ctx.saved_tensors
-        args = (points, colors, idx, k_idxs, radius, znear, zfar, sigma, gamma, grad_out_color)
-        grad_points = _C.rasterize_points_backward(*args)
+        max_radius = ctx.max_radius
+        points, colors, sigmas, idx, k_idxs = ctx.saved_tensors
+        args = (points, colors, sigmas, max_radius, idx, k_idxs, znear, zfar, gamma, grad_out_color)
+        grad_points, grad_colors, grad_sigmas = _C.rasterize_points_backward(*args)
         grads = (
             grad_points,
             grad_colors,
+            grad_sigmas,
+            grad_max_radius,
             grad_cloud_to_packed_first_idx,
             grad_num_points_per_cloud,
             grad_image_height,
             grad_image_width,
-            grad_radius,
             grad_points_per_pixel,
             grad_bin_size,
             grad_max_points_per_bin,
             grad_zfar,
             grad_znear,
-            grad_sigma,
             grad_gamma
         )
         return grads
