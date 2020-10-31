@@ -393,7 +393,7 @@ __global__ void RasterizePointsGKCudaKernel(
         int k_idx = atomicInc(&(k_idxs[0*H*W + py_rounded*W + px_rounded]), K + 1);
         if (k_idx == K) {
             printf("Pixel y:%d x:%d exceeded point projection limit\n", py_rounded, px_rounded);
-            assert(0);
+            //assert(0);
         }
 
         int idx = 0 * H * W * K + py_rounded * W * K + px_rounded * K + k_idx;

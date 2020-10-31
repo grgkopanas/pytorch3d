@@ -649,6 +649,7 @@ def load_ply(f):
     header, elements = _load_ply_raw(f)
 
     vertex = elements.get("vertex", None)
+
     if vertex is None:
         raise ValueError("The ply file has no vertex element.")
 
@@ -656,6 +657,9 @@ def load_ply(f):
     if face is None:
         raise ValueError("The ply file has no face element.")
 
+    if isinstance(vertex, list):
+        print("[GK]P3d Ply loader returned a list! Highjacking and converting to array.")
+        vertex = np.array(vertex)[:,:3]
     if (
         not isinstance(vertex, np.ndarray)
         or vertex.ndim != 2
