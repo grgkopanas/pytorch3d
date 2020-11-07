@@ -9,106 +9,26 @@ from pytorch3d.renderer.mesh.rasterize_meshes import pix_to_ndc
 
 # TODO(jcjohns): Support non-square images
 def rasterize_points(
-    pointclouds,
     points,
+    features,
     sigmas,
     max_radius,
     image_height: int = 256,
     image_width: int = 256,
     points_per_pixel: int = 8,
-    bin_size: Optional[int] = None,
-    max_points_per_bin: Optional[int] = None,
     zfar: float = -0.5,
     znear: float = -0.5,
     gamma: float = None
 ):
-    """
-    Pointcloud rasterization
 
-    Args:
-        pointclouds: A Pointclouds object representing a batch of point clouds to be
-            rasterized. This is a batch of N pointclouds, where each point cloud
-            can have a different number of points; the coordinates of each point
-            are (x, y, z). The coordinates are expected to
-            be in normalized device coordinates (NDC): [-1, 1]^3 with the camera at
-            (0, 0, 0); the x-axis goes from left-to-right, the y-axis goes from
-            top-to-bottom, and the z-axis goes from back-to-front.
-        image_size: Integer giving the resolution of the rasterized image
-        radius (Optional): Float giving the radius (in NDC units) of the disk to
-            be rasterized for each point.
-        points_per_pixel (Optional): We will keep track of this many points per
-            pixel, returning the nearest points_per_pixel points along the z-axis
-        bin_size: Size of bins to use for coarse-to-fine rasterization. Setting
-            bin_size=0 uses naive rasterization; setting bin_size=None attempts to
-            set it heuristically based on the shape of the input. This should not
-            affect the output, but can affect the speed of the forward pass.
-        points_per_bin: Only applicable when using coarse-to-fine rasterization
-            (bin_size > 0); this is the maxiumum number of points allowed within each
-            bin. If more than this many points actually fall into a bin, an error
-            will be raised. This should not affect the output values, but can affect
-            the memory usage in the forward pass.
-
-    Returns:
-        3-element tuple containing
-
-        - **idx**: int32 Tensor of shape (N, image_size, image_size, points_per_pixel)
-          giving the indices of the nearest points at each pixel, in ascending
-          z-order. Concretely `idx[n, y, x, k] = p` means that `points[p]` is the kth
-          closest point (along the z-direction) to pixel (y, x) - note that points
-          represents the packed points of shape (P, 3).
-          Pixels that are hit by fewer than points_per_pixel are padded with -1.
-        - **zbuf**: Tensor of shape (N, image_size, image_size, points_per_pixel)
-          giving the z-coordinates of the nearest points at each pixel, sorted in
-          z-order. Concretely, if `idx[n, y, x, k] = p` then
-          `zbuf[n, y, x, k] = points[n, p, 2]`. Pixels hit by fewer than
-          points_per_pixel are padded with -1
-        - **dists2**: Tensor of shape (N, image_size, image_size, points_per_pixel)
-          giving the squared Euclidean distance (in NDC units) in the x/y plane
-          for each point closest to the pixel. Concretely if `idx[n, y, x, k] = p`
-          then `dists[n, y, x, k]` is the squared distance between the pixel (y, x)
-          and the point `(points[n, p, 0], points[n, p, 1])`. Pixels hit with fewer
-          than points_per_pixel are padded with -1.
-    """
-    if points is not None:
-        points_packed = points[:, :, :3].squeeze(dim=0)
-    else:
-        points_packed = pointclouds.points_packed()
-    cloud_to_packed_first_idx = pointclouds.cloud_to_packed_first_idx()
-    num_points_per_cloud = pointclouds.num_points_per_cloud()
-    colors = pointclouds.features_packed()
-
-    if bin_size is None:
-        if not points_packed.is_cuda:
-            # Binned CPU rasterization not fully implemented
-            bin_size = 0
-        else:
-            # TODO: These heuristics are not well-thought out!
-            if max(image_height, image_width) <= 64:
-                bin_size = 8
-            elif max(image_height, image_width) <= 256:
-                bin_size = 16
-            elif max(image_height, image_width) <= 512:
-                bin_size = 32
-            elif max(image_height, image_width) <= 1024:
-                bin_size = 64
-
-    if max_points_per_bin is None:
-        max_points_per_bin = int(max(10000, points_packed.shape[0] / 5))
-
-    # Function.apply cannot take keyword args, so we handle defaults in this
-    # wrapper and call apply with positional args only
     return _RasterizePoints.apply(
-        points_packed,
-        colors,
+        points,
+        features,
         sigmas,
         max_radius,
-        cloud_to_packed_first_idx,
-        num_points_per_cloud,
         image_height,
         image_width,
         points_per_pixel,
-        bin_size,
-        max_points_per_bin,
         zfar,
         znear,
         gamma
@@ -123,13 +43,9 @@ class _RasterizePoints(torch.autograd.Function):
         colors,  # (P, C)
         sigmas,  # (P, 1)
         max_radius,
-        cloud_to_packed_first_idx,
-        num_points_per_cloud,
         image_height: int = 256,
         image_width: int = 256,
         points_per_pixel: int = 8,
-        bin_size: int = 0,
-        max_points_per_bin: int = 0,
         zfar: float = -0.5,
         znear: float = -0.5,
         gamma: float = None
@@ -141,13 +57,9 @@ class _RasterizePoints(torch.autograd.Function):
             colors,
             sigmas,
             max_radius,
-            cloud_to_packed_first_idx,
-            num_points_per_cloud,
             image_height,
             image_width,
             points_per_pixel,
-            bin_size,
-            max_points_per_bin,
             zfar,
             znear,
             gamma
@@ -166,13 +78,10 @@ class _RasterizePoints(torch.autograd.Function):
         grad_colors = None
         grad_sigmas = None
         grad_max_radius = None
-        grad_cloud_to_packed_first_idx = None
-        grad_num_points_per_cloud = None
         grad_image_height = None
         grad_image_width = None
         grad_points_per_pixel = None
         grad_bin_size = None
-        grad_max_points_per_bin = None
         grad_zfar = None
         grad_znear = None
         grad_gamma = None
@@ -188,13 +97,10 @@ class _RasterizePoints(torch.autograd.Function):
             grad_colors,
             grad_sigmas,
             grad_max_radius,
-            grad_cloud_to_packed_first_idx,
-            grad_num_points_per_cloud,
             grad_image_height,
             grad_image_width,
             grad_points_per_pixel,
             grad_bin_size,
-            grad_max_points_per_bin,
             grad_zfar,
             grad_znear,
             grad_gamma
