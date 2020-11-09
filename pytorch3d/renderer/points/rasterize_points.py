@@ -12,6 +12,7 @@ def rasterize_points(
     points,
     features,
     sigmas,
+    inv_cov,
     max_radius,
     image_height: int = 256,
     image_width: int = 256,
@@ -25,6 +26,7 @@ def rasterize_points(
         points,
         features,
         sigmas,
+        inv_cov,
         max_radius,
         image_height,
         image_width,
@@ -42,6 +44,7 @@ class _RasterizePoints(torch.autograd.Function):
         points,  # (P, 3)
         colors,  # (P, C)
         sigmas,  # (P, 1)
+        inv_cov,
         max_radius,
         image_height: int = 256,
         image_width: int = 256,
@@ -56,6 +59,7 @@ class _RasterizePoints(torch.autograd.Function):
             points,
             colors,
             sigmas,
+            inv_cov,
             max_radius,
             image_height,
             image_width,

@@ -116,6 +116,7 @@ __global__ void BlendPointsGKCudaKernel(
     const float* colors, // (P, C)
     const int32_t* k_idxs, // (N, H, W)
     const float* sigmas, // (P, 1)
+    const float* inv_cov, // (P, 4)
     const int max_radius,
     const float gamma,
     const int N,
@@ -129,9 +130,7 @@ __global__ void BlendPointsGKCudaKernel(
     float* mask, // (N, 1, H, W)
     float* depth) // (N, 1, H, W)
 {
-    int radius = max_radius;
-
-    const int radius2 = radius*radius;
+    const int radius2 = max_radius*max_radius;
     // One thread per output pixel
     const int num_threads = gridDim.x * blockDim.x;
     const int tid = blockDim.x * blockIdx.x + threadIdx.x;
@@ -143,10 +142,10 @@ __global__ void BlendPointsGKCudaKernel(
         const int xi = pix_idx % W;
 
         Pix gathered_points[kMaxPointPerPixelLocal];
-        int y_start = yi - radius;
-        int y_finish = yi + radius;
-        int x_start = xi - radius;
-        int x_finish = xi + radius;
+        int y_start = yi - max_radius;
+        int y_finish = yi + max_radius;
+        int x_start = xi - max_radius;
+        int x_finish = xi + max_radius;
 
         int gathered_points_idx = 0;
         int gathered_points_idx_max = -1;
@@ -172,8 +171,13 @@ __global__ void BlendPointsGKCudaKernel(
                     if (dist2 > radius2)
                         continue;
 
-                    float sigma = sigmas[p_idx];
-                    float g_w = exp(-dist2/(2*sigma*sigma));
+                    float a = inv_cov[p_idx*4 + 0];
+                    float b = inv_cov[p_idx*4 + 1];
+                    float c = inv_cov[p_idx*4 + 2];
+                    float d = inv_cov[p_idx*4 + 3];
+
+                    float g_w = exp((-1.0/2.0)*(a*dx*dx + 2*b*dx*dy + d*dy*dy));
+                    //float g_w = exp((-1.0/2.0)*((dx*dx)/(s_x*s_x) + (dy*dy)/(s_y*s_y)));
                     float alpha = pow(g_w, gamma);
                     if (alpha < 1/255.0)
                         continue;
@@ -285,6 +289,7 @@ RasterizePointsGKCuda(
     const torch::Tensor& points, // (P, 3)
     const torch::Tensor& colors, // (P, C)
     const torch::Tensor& sigmas, // (P, 1)
+    const torch::Tensor& inv_cov, // (P, 4)
     const int max_radius,
     const int image_height,
     const int image_width,
@@ -339,6 +344,7 @@ RasterizePointsGKCuda(
       colors.contiguous().data<float>(),
       k_idxs.data<int32_t>(),
       sigmas.data<float>(),
+      inv_cov.data<float>(),
       max_radius,
       gamma,
       N,
