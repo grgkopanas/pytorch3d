@@ -49,7 +49,7 @@ class PointsRasterizer(nn.Module):
         self.raster_settings = raster_settings
 
 
-    def forward(self, points_screen, features, sigmas, inv_cov, max_radius) -> PointFragments:
+    def forward(self, points_screen, features, inv_cov, max_radius) -> PointFragments:
         """
         Args:
             point_clouds: a set of point clouds with coordinates in world space.
@@ -60,7 +60,6 @@ class PointsRasterizer(nn.Module):
         idx, color, depth, mask = rasterize_points(
             points_screen,
             features,
-            sigmas,
             inv_cov,
             max_radius,
             image_height=raster_settings.image_height,

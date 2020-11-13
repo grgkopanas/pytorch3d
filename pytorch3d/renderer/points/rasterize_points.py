@@ -11,7 +11,6 @@ from pytorch3d.renderer.mesh.rasterize_meshes import pix_to_ndc
 def rasterize_points(
     points,
     features,
-    sigmas,
     inv_cov,
     max_radius,
     image_height: int = 256,
@@ -25,7 +24,6 @@ def rasterize_points(
     return _RasterizePoints.apply(
         points,
         features,
-        sigmas,
         inv_cov,
         max_radius,
         image_height,
@@ -43,8 +41,7 @@ class _RasterizePoints(torch.autograd.Function):
         ctx,
         points,  # (P, 3)
         colors,  # (P, C)
-        sigmas,  # (P, 1)
-        inv_cov,
+        inv_cov, # (P, 4)
         max_radius,
         image_height: int = 256,
         image_width: int = 256,
@@ -58,7 +55,6 @@ class _RasterizePoints(torch.autograd.Function):
         args = (
             points,
             colors,
-            sigmas,
             inv_cov,
             max_radius,
             image_height,
@@ -73,14 +69,14 @@ class _RasterizePoints(torch.autograd.Function):
         ctx.zfar = zfar
         ctx.gamma = gamma
         ctx.max_radius = max_radius
-        ctx.save_for_backward(points, colors, sigmas, idx, k_idxs)
+        ctx.save_for_backward(points, colors, inv_cov, idx, k_idxs)
         return idx, color, depth, mask
 
     @staticmethod
     def backward(ctx, grad_idx, grad_out_color, grad_depth, grad_mask):
         grad_points = None
         grad_colors = None
-        grad_sigmas = None
+        grad_inv_cov = None
         grad_max_radius = None
         grad_image_height = None
         grad_image_width = None
@@ -93,13 +89,13 @@ class _RasterizePoints(torch.autograd.Function):
         zfar = ctx.zfar
         gamma = ctx.gamma
         max_radius = ctx.max_radius
-        points, colors, sigmas, idx, k_idxs = ctx.saved_tensors
-        args = (points, colors, sigmas, max_radius, idx, k_idxs, znear, zfar, gamma, grad_out_color)
-        grad_points, grad_colors, grad_sigmas = _C.rasterize_points_backward(*args)
+        points, colors, inv_cov, idx, k_idxs = ctx.saved_tensors
+        args = (points, colors, inv_cov, max_radius, idx, k_idxs, znear, zfar, gamma, grad_out_color)
+        grad_points, grad_colors, grad_inv_cov = _C.rasterize_points_backward(*args)
         grads = (
             grad_points,
             grad_colors,
-            grad_sigmas,
+            grad_inv_cov,
             grad_max_radius,
             grad_image_height,
             grad_image_width,

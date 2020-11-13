@@ -5,18 +5,12 @@
 #include <cstdio>
 #include <tuple>
 
-// ****************************************************************************
-// *                          NAIVE RASTERIZATION                             *
-// ****************************************************************************
-
-
 #ifdef WITH_CUDA
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsGKCuda(
     const torch::Tensor& points,
     const torch::Tensor& colors,
-    const torch::Tensor& sigmas,
     const torch::Tensor& inv_cov,
     const int max_radius,
     const int image_height,
@@ -38,7 +32,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizePointsBackwardCuda(
     const torch::Tensor& points,
     const torch::Tensor& colors,
-    const torch::Tensor& sigmas,
+    const torch::Tensor& inv_cov,
     const int max_radius,
     const torch::Tensor& idxs,
     const torch::Tensor& k_idxs,
@@ -66,7 +60,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizePointsBackward(
     const torch::Tensor& points,
     const torch::Tensor& colors,
-    const torch::Tensor& sigmas,
+    const torch::Tensor& inv_cov,
     const int max_radius,
     const torch::Tensor& idxs,
     const torch::Tensor& k_idxs,
@@ -76,7 +70,8 @@ RasterizePointsBackward(
     const torch::Tensor& grad_out_color) {
   if (points.type().is_cuda()) {
 #ifdef WITH_CUDA
-    return RasterizePointsBackwardCuda(points, colors, sigmas, max_radius,
+    return RasterizePointsBackwardCuda(points, colors,
+                                       inv_cov, max_radius,
                                        idxs, k_idxs, znear, zfar,
                                        gamma, grad_out_color);
 #else
@@ -127,7 +122,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 RasterizePoints(
     const torch::Tensor& points,
     const torch::Tensor& colors,
-    const torch::Tensor& sigmas,
     const torch::Tensor& inv_cov,
     const int max_radius,
     const int image_height,
@@ -140,7 +134,6 @@ RasterizePoints(
     return RasterizePointsGKCuda(
         points,
         colors,
-        sigmas,
         inv_cov,
         max_radius,
         image_height,
